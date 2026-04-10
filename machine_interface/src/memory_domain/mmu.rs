@@ -60,6 +60,7 @@ impl MemoryDomain for MmuMemoryDomain {
         Ok(Box::new(MmuMemoryDomain { memory_pool }))
     }
 
+    // SVEN: return an allocated chunk of memory from the large pool that was mapped!
     fn acquire_context(&self, size: usize) -> DandelionResult<Context> {
         // create and map a shared memory region
         let (mem_space, actual_size) = self

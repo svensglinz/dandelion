@@ -65,6 +65,7 @@ impl Function {
 }
 
 /// Struct holding all information about an alternative engine to execute the function.
+///
 pub struct FunctionAlternative {
     /// The engine type of the alternative.
     pub engine: EngineType,

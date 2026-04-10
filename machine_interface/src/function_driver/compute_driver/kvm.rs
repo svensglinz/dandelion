@@ -2,7 +2,7 @@ use crate::{
     function_driver::{
         functions::{ElfConfig, Function, FunctionConfig},
         load_utils::load_u8_from_file,
-        thread_utils::{start_thread, EngineLoop},
+        thread_utils::{start_thread, Engine},
         ComputeResource, Driver, EngineWorkQueue,
     },
     interface::{read_output_structs, setup_input_structs, write_heap_end},
@@ -57,13 +57,13 @@ fn step_debug(vcpu: &VcpuFd) {
     })
     .unwrap();
 }
-struct KvmLoop {
+pub struct KvmLoop {
     vm: VmFd,
     vcpu: VcpuFd,
     state: ResetState,
 }
 
-impl EngineLoop for KvmLoop {
+impl Engine for KvmLoop {
     fn init(_core_id: u8) -> DandelionResult<Box<Self>> {
         let kvm = Kvm::new().unwrap();
         assert_eq!(kvm.get_api_version(), 12);

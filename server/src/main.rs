@@ -84,6 +84,7 @@ async fn serve_request(
 
     let start_time = Instant::now();
 
+    // Lauberhorn: Not necessary anymore as we only do UDP for nwo
     // pull all frames from the network
     let mut incomming = req.into_body();
     let mut body_pin = std::pin::Pin::new(&mut incomming);
@@ -120,11 +121,12 @@ async fn serve_request(
 
     // TODO match set names to assign sets to composition sets
     // map sets in the order they are in the request
-    let request_number = request_context.content.len();
+    let request_number = request_context.content.len(); // number of arguments we sent (as DataSet here)
     debug!("Request number of request_context: {}", request_number);
     let request_arc = Arc::new(request_context);
     let inputs = (0..request_number)
         .map(|set_id| {
+            // ???
             DispatcherInput::Set(CompositionSet::from((set_id, vec![request_arc.clone()])))
         })
         .collect::<Vec<_>>();
@@ -155,12 +157,14 @@ async fn serve_request(
             .await
             .unwrap();
     }
+    // await the function result from the channel
     let (function_output, recorder) = output_recevier
         .await
         .unwrap()
         .expect("Should get result from function");
 
-    let response_body = dandelion_server::DandelionBody::new(function_output, &recorder);
+    let response_body: DandelionBody =
+        dandelion_server::DandelionBody::new(function_output, &recorder);
 
     debug!("finished creating response body");
     let response = Ok::<_, Infallible>(Response::new(response_body));
@@ -528,12 +532,12 @@ fn main() -> () {
 
     let dispatcher_cores = config.get_dispatcher_cores();
     let frontend_cores = config.get_frontend_cores();
-    let communication_cores = config
+    let communication_cores: Vec<ComputeResource> = config
         .get_communication_cores()
         .into_iter()
         .map(|core| resource_conversion(core))
         .collect();
-    let compute_cores = config
+    let compute_cores: Vec<ComputeResource> = config
         .get_computation_cores()
         .into_iter()
         .map(|core| resource_conversion(core))
@@ -550,6 +554,8 @@ fn main() -> () {
     let mut runtime_builder = Builder::new_multi_thread();
     runtime_builder.enable_io();
     runtime_builder.worker_threads(frontend_cores.len());
+
+    // Sven: pin each worker thread to a specific core
     runtime_builder.on_thread_start(move || {
         static ATOMIC_INDEX: AtomicUsize = AtomicUsize::new(0);
         let core_index = ATOMIC_INDEX.fetch_add(1, Ordering::SeqCst);
@@ -567,6 +573,7 @@ fn main() -> () {
     runtime_builder.event_interval(10);
     let runtime = runtime_builder.build().unwrap();
 
+    // Sven: dispatcher will disappear
     let dispatcher_runtime = Builder::new_multi_thread()
         .worker_threads(dispatcher_cores.len())
         .on_thread_start(move || {

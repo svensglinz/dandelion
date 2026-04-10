@@ -514,6 +514,8 @@ impl Dispatcher {
                         recorder: subrecoder,
                     };
                     recorder.record(RecordPoint::ExecutionQueue);
+
+                    // WHERE THE FUNCTIN IS EXECUTED -> ARGS = WorkToDo::FunctionArguments()
                     let context = self.work_queue.do_work(args).await?.get_context();
                     recorder.record(RecordPoint::FutureReturn);
 
@@ -543,6 +545,7 @@ impl Dispatcher {
                         }
                     }
 
+                    // somehow order function return stuff and return to the caller
                     let context_arc = Arc::new(context);
                     let composition_sets = context_arc
                         .content

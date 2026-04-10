@@ -23,7 +23,7 @@ pub trait ContextTrait: Send + Sync {
     /// May fail if the range offset..offset+buffer length in bytes is not completely within context size
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()>;
     /// Get a &[u8] reference to a chunck of at reference with size up to length.
-    /// May return a slice smaller then the requwested length if there is internal fragementation that
+    /// May return a slice smaller then the requested length if there is internal fragementation that
     /// prevents an efficient slice representation of the entire chunck
     /// May fail if the range offset..offset+length is not completely within the context size
     fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]>;
@@ -31,6 +31,8 @@ pub trait ContextTrait: Send + Sync {
 
 // https://docs.rs/enum_dispatch/latest/enum_dispatch/index.html
 // check if this would be better way to do it
+
+// SVEN: name misleading as we hold memory in Type ?
 #[derive(Debug)]
 pub enum ContextType {
     Malloc(Box<malloc::MallocContext>),
@@ -100,6 +102,7 @@ pub enum ContextState {
     Run(i32),
 }
 
+// Sven: Strange that context struct holds a field taht is named context... ?
 #[derive(Debug)]
 pub struct Context {
     pub context: ContextType,
@@ -128,6 +131,8 @@ impl Context {
             content: vec![],
             size: size,
             state: ContextState::InPreparation,
+            // offset:0, size:0 = start marker
+            // offset: size, size: 0 = end marker
             occupation: vec![
                 Position { offset: 0, size: 0 },
                 Position {

@@ -7,13 +7,13 @@ extern crate alloc;
 use alloc::sync::Arc;
 use dandelion_commons::{records::Recorder, DandelionResult};
 
+pub mod thread_utils; 
 pub mod compute_driver;
 pub mod functions;
 mod load_utils;
 pub mod system_driver;
 #[cfg(test)]
 mod test_queue;
-mod thread_utils;
 
 #[derive(Debug, Clone, Copy)]
 pub enum ComputeResource {
@@ -25,7 +25,7 @@ pub enum ComputeResource {
 #[derive(Debug)]
 pub struct Metadata {
     /// The input set names with an optional static composition set. If the static set is set it will
-    /// prioritized and any other input for that set is ignored.
+    /// prioritized and any other input for that set is ignored. (meaning ????)
     pub input_sets: Vec<(String, Option<CompositionSet>)>,
     /// The output set names.
     pub output_sets: Vec<String>,

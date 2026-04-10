@@ -2,7 +2,7 @@ use crate::{
     function_driver::{
         functions::{ElfConfig, Function, FunctionConfig},
         load_utils::load_u8_from_file,
-        thread_utils::{start_thread, EngineLoop},
+        thread_utils::{start_thread, Engine},
         ComputeResource, Driver, EngineWorkQueue,
     },
     interface::{read_output_structs, setup_input_structs},
@@ -171,11 +171,11 @@ fn mmu_run_static(
     }
 }
 
-struct MmuLoop {
+pub struct MmuLoop {
     cpu_slot: u8,
 }
 
-impl EngineLoop for MmuLoop {
+impl Engine for MmuLoop {
     fn init(core_id: u8) -> DandelionResult<Box<Self>> {
         return Ok(Box::new(MmuLoop { cpu_slot: core_id }));
     }

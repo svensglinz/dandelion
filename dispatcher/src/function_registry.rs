@@ -196,6 +196,7 @@ impl FunctionRegistry {
                 engine_type,
                 context_size,
                 String::new(),
+                // SVEN: Change --> requires certain layout of domain vector ? 
                 domains[engine_type.get_domain_type() as usize].clone(),
                 Arc::new(function_config),
             );

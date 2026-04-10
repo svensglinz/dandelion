@@ -2,7 +2,7 @@ use crate::{
     function_driver::{
         functions::{ElfConfig, Function, FunctionConfig},
         load_utils::load_u8_from_file,
-        thread_utils::{start_thread, EngineLoop},
+        thread_utils::{start_thread, Engine},
         ComputeResource, Driver, EngineWorkQueue,
     },
     interface::{read_output_structs, setup_input_structs},
@@ -26,9 +26,9 @@ extern "C" {
     ) -> i8;
 }
 
-struct CheriLoop {}
+pub struct CheriLoop {}
 
-impl EngineLoop for CheriLoop {
+impl Engine for CheriLoop {
     fn init(_core_id: u8) -> DandelionResult<Box<Self>> {
         return Ok(Box::new(CheriLoop {}));
     }

@@ -13,7 +13,7 @@ use std::thread::spawn;
 
 extern crate alloc;
 
-pub trait EngineLoop {
+pub trait Engine {
     fn init(core_id: u8) -> DandelionResult<Box<Self>>;
     fn run(
         &mut self,
@@ -24,7 +24,7 @@ pub trait EngineLoop {
     fn get_engine_type(&self) -> EngineType;
 }
 
-fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
+fn run_thread<E: Engine>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
     // set core affinity
     if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
         log::error!("core received core id that could not be set");
@@ -83,7 +83,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
                 for (set_index, (input_set_name, static_set)) in
                     metadata.input_sets.iter().enumerate()
                 {
-                    // need to add each input set to the content
+                    // need to add each input set to the content // Sven: CONTEXT ?
                     // the input_sets vec can have less entries than the functions defined sets (not all sets need to be used in composition)
                     let transfer_option = static_set
                         .as_ref()
@@ -93,6 +93,8 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
                         ident: input_set_name.clone(),
                         buffers: Vec::with_capacity(capacity),
                     }));
+
+                    // transfer data into the isolation context (memory) -> Eg function arguments
                     if let Some(transfer_set) = transfer_option {
                         for (source_set_index, source_item_index, source_context) in transfer_set {
                             let transfer_result = memory_domain::transfer_data_item(
@@ -116,7 +118,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
 
                 recorder.record(RecordPoint::EngineStart);
 
-                let result = engine_state.run(
+                let result: Result<Context, DandelionError> = engine_state.run(
                     function.config.clone(),
                     function_context,
                     &metadata.output_sets,
@@ -140,6 +142,6 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
     }
 }
 
-pub fn start_thread<E: EngineLoop>(cpu_slot: u8, queue: Box<dyn EngineWorkQueue + Send>) -> () {
+pub fn start_thread<E: Engine>(cpu_slot: u8, queue: Box<dyn EngineWorkQueue + Send>) -> () {
     spawn(move || run_thread::<E>(cpu_slot, queue));
 }

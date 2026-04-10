@@ -1,0 +1,2 @@
+max_width = 80        # or 80 for even shorter lines
+use_small_heuristics = "Max"

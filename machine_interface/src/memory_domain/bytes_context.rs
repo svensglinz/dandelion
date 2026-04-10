@@ -358,7 +358,13 @@ fn read_data_set(
     }));
 }
 
+// does this deserialize the DandelionRequest that is incoming ?
+// Sven: Q: Does this do manual deserialization ???
 impl BytesContext {
+    pub fn new(frame_data: Vec<Bytes>) -> Self {
+        Self { frames: frame_data }
+    }
+
     pub async fn from_bytes_vec(
         frame_data: Vec<Bytes>,
         total_size: usize,
