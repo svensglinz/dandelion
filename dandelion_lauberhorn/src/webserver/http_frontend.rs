@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use dandelion_commons::records::Archive;
-use dandelion_lauberhorn::runtime::Runtime;
+use crate::runtime::Runtime;
 use dandelion_server::DandelionBody;
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
@@ -21,13 +21,15 @@ use machine_interface::{DataItem, DataSet, Position};
 use serde::Deserialize;
 use tokio::net::TcpListener;
 use tokio::signal::unix::SignalKind;
-use crate::http_schemas::{RegisterFunction};
-use crate::http_response::*;
 
+use super::schemas::RegisterFunction;
+use super::utils as webutils;
 pub const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
 
 pub static TRACING_ARCHIVE: OnceLock<Archive> = OnceLock::new();
 
+
+#[derive(Debug)]
 enum HandlerError {
     BadRequest(String),
     Internal(String),
@@ -36,8 +38,8 @@ enum HandlerError {
 impl HandlerError {
     fn to_response(&self) -> Response<DandelionBody> {
         match self {
-            HandlerError::BadRequest(msg) => http_response::make_bad_request(msg),
-            HandlerError::Internal(msg) => http_response::butmake_internal_error(msg),
+            HandlerError::BadRequest(msg) => webutils::make_bad_request(msg),
+            HandlerError::Internal(msg) => webutils::make_internal_error(msg),
         }
     }
 }
@@ -51,15 +53,15 @@ async fn register_function<E: Engine>(
     runtime: &Runtime<E>
 ) -> Result<Response<DandelionBody>, HandlerError> {
 
-    let bytes = match req.collect().await {
-        Ok(body) => body.to_bytes(),
-        Err(e) => {
-            return Err(HandlerError::BadRequest("Failed to extract body from request".into()));
-        }
-    };
+    let bytes = req.collect()
+        .await
+        .map_err(|e| HandlerError::BadRequest(format!("Failed to extract body from request: {}", e)))
+        .unwrap()
+        .to_bytes();
 
     let request_map: RegisterFunction =
-        bson::from_slice(&bytes).expect("Should be able to deserialize request");
+        bson::from_slice(&bytes)
+        .map_err(|e| HandlerError::BadRequest(format!("Failed to deserialize request: {}", e)))?;
 
 
     let path_string = if !request_map.local_path.is_empty() {
@@ -76,22 +78,16 @@ async fn register_function<E: Engine>(
         let mut path_buff = PathBuf::from(FUNCTION_FOLDER_PATH);
         path_buff.push(request_map.name.clone());
         let mut function_file = std::fs::File::create(path_buff.clone())
-            .expect("Failed to create file for registering function");
+        .map_err(|e| HandlerError::Internal(format!("Failed to create file for registering function: {}", e)))?;
+
         function_file
             .write_all(&request_map.binary)
-            .expect("Failed to write file with content for registering");
+            .map_err(|e| HandlerError::Internal(format!("Failed to write file with content for registering: {}", e)))?;
         path_buff.to_str().unwrap().to_string()
     };
 
-    let engine_type = match request_map.engine_type.as_str() {
-        #[cfg(feature = "mmu")]
-        "Process" => EngineType::Process,
-        #[cfg(feature = "kvm")]
-        "Kvm" => EngineType::Kvm,
-        #[cfg(feature = "cheri")]
-        "Cheri" => EngineType::Cheri,
-        unknown: => return Err(HandlerError::BadRequest(format!("Unknown engine type {}", unknown))), 
-    };
+    let engine_type = crate::utils::engine::get_engine_type(&request_map.engine_type)
+        .map_err(|_| HandlerError::BadRequest(format!("Invalid engine type specified: {}", request_map.engine_type)))?;
     
     let input_sets = request_map
         .input_sets
@@ -135,10 +131,12 @@ async fn register_function<E: Engine>(
         request_map.name, engine_type, request_map.context_size as usize,
         path_string, metadata,
     ) {
-        Ok(_) => webserver::utils::make_ok("Function registered successfully"),
+        Ok(_) => Ok(webutils::make_ok("Function registered successfully")),
         Err(_) => Err(HandlerError::Internal("Function registration failed".into())),
     }
 }
+
+
 
 #[derive(Debug, Deserialize)]
 struct RegisterService {
@@ -158,25 +156,26 @@ async fn register_service<E: Engine>(
         .await
         .map_err(|e| HandlerError::BadRequest("Failed to extract body from request".into()))?
         .to_bytes();
+
     let request_map: RegisterService =
         bson::from_slice(&bytes)
         .map_err(|e| HandlerError::BadRequest("Failed to deserialize request".into()))?;
+
     match runtime.register_service(
         Arc::new(request_map.function_id), request_map.prog_num,
         request_map.prog_ver, request_map.proc_num, request_map.listen_port,
     ) {
-        Ok(_) => webserver::utils::make_ok("Service registered successfully"),
+        Ok(_) => Ok(webutils::make_ok("Service registered successfully")),
         Err(_) => Err(HandlerError::BadRequest("Service registration failed".into())),
     }
 }
 
-async fn serve_stats(_req: Request<Incoming>) -> Result<Response<DandelionBody>, Infallible> {
+async fn serve_stats(_req: Request<Incoming>) -> Result<Response<DandelionBody>, HandlerError> {
     let archive = TRACING_ARCHIVE.get().unwrap();
-    let response = Response::new(DandelionBody::from_vec(
-        archive.get_summary().into_bytes(),
-    ));
+    let response = archive.get_summary();
+    
     archive.reset();
-    Ok::<_, Infallible>(response)
+    Ok(webutils::make_ok(&response))
 }
 
 // ---------------------------------------------------------------------------
@@ -186,7 +185,7 @@ async fn serve_stats(_req: Request<Incoming>) -> Result<Response<DandelionBody>,
 async fn service<E: Engine>(
     req: Request<Incoming>,
     runtime: Arc<Runtime<E>>,
-) -> Result<Response<DandelionBody>, HandlerError> {
+) -> Result<Response<DandelionBody>, Infallible> {
 
     info!("Incoming HTTP request: {} {}", req.method(), req.uri().path());
 
@@ -194,17 +193,21 @@ async fn service<E: Engine>(
         "/register/function" => register_function(req, &runtime).await,
         "/register/service" => register_service(req, &runtime).await,
         "/stats" => serve_stats(req).await,
-        _ => Ok(not_found()),
+        _ => Ok(webutils::make_bad_request("Unknown endpoint")),
     };
 
     match result {
-        Ok(resp) => Ok(resp),
-        Err(e) => Ok(e.to_response())
+        // on success, return repsonse generated by handler
+        Ok(resp) => {
+            info!("log response");
+            Ok(resp)
+        }
+        // on error, convert error to response and return it
+        Err(e) => {
+            error!("Request handling failed with error: {:?}", e);
+            Ok(e.to_response())
+        }
     }
-}
-
-fn not_found() -> Response<DandelionBody> {
-    Response::new(DandelionBody::from_vec(b"Not found".to_vec()))
 }
 
 // ---------------------------------------------------------------------------

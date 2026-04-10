@@ -1,21 +1,16 @@
-mod http_frontend;
-mod platform;
-mod http_schemas;
-mod http_response;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-
+use dandelion_lauberhorn::platform;
 use core_affinity::{self, CoreId};
 use dandelion_commons::records::Archive;
 use dandelion_lauberhorn::runtime::create_runtime;
+use dandelion_lauberhorn::webserver::http_frontend::{FUNCTION_FOLDER_PATH, TRACING_ARCHIVE, service_loop};
 use log::{info, warn};
 use machine_interface::machine_config::DomainType;
 use machine_interface::memory_domain::MemoryResource;
 use tokio::runtime::Builder;
-
-use http_frontend::{FUNCTION_FOLDER_PATH, TRACING_ARCHIVE, service_loop};
 
 // ---------------------------------------------------------------------------
 // Initialization helpers
@@ -61,6 +56,17 @@ fn init_memory_pool() -> BTreeMap<DomainType, MemoryResource> {
         #[cfg(feature = "mmu")]
         (DomainType::Process, MemoryResource::Shared { id: 0, size: max_ram }),
     ])
+}
+
+fn get_configured_feature() -> String {
+    let mut features = Vec::new();
+    #[cfg(feature = "cheri")]
+    features.push("cheri");
+    #[cfg(feature = "mmu")]
+    features.push("mmu");
+    #[cfg(feature = "kvm")]
+    features.push("kvm");
+    features.join(", ")
 }
 
 fn print_features() {

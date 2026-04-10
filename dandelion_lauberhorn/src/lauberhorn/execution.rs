@@ -10,7 +10,7 @@ use machine_interface::machine_config::EngineType;
 use machine_interface::memory_domain::Context;
 use machine_interface::DataSet;
 
-use crate::lauberhorn_types::LauberhornServiceCtx;
+use crate::lauberhorn::types::LauberhornServiceCtx;
 
 /// Entry point called from the FFI handler — looks up the function, runs it,
 /// and returns the result context on the heap for marshalling.
@@ -31,7 +31,7 @@ pub fn execute_lauberhorn_function<E: Engine>(
 
     let result_ctx = match func {
         FunctionType::Function(ref func_info) => {
-            execute_function(engine, func_info, unsafe { &*req_ctx })
+            execute_function(engine, func_info, unsafe { &*req_ctx }).unwrap()
         }
         _ => panic!("Unsupported function type"),
     };
@@ -45,7 +45,7 @@ pub fn execute_function<E: Engine>(
     engine: *mut E,
     func_info: &FunctionInfo,
     req_ctx: &Context,
-) -> Context {
+) -> Result<Context, ()> {
     let variants = func_info
         .alternatives
         .read()
@@ -66,14 +66,14 @@ pub fn execute_function<E: Engine>(
 
     transfer_input_sets(&mut function_context, &func_info.metadata, &req_ctx.content);
 
-    unsafe {
+    let ctx = unsafe {
         (*engine).run(
             function.config.clone(),
             function_context,
-            &func_info.metadata.output_sets,
-        )
-    }
-    .expect("Function execution failed")
+            &vec!["test".to_string()]
+        ).unwrap()
+    };
+    Ok(ctx)
 }
 
 /// Copy input sets from the incoming context into the isolation context.

@@ -3,8 +3,8 @@ use std::ffi::c_void;
 use machine_interface::function_driver::thread_utils::Engine;
 use machine_interface::memory_domain::Context;
 
-use crate::lauberhorn_ffi::*;
-use crate::lauberhorn_types::LauberhornServiceCtx;
+use crate::lauberhorn::ffi::*;
+use crate::lauberhorn::types::LauberhornServiceCtx;
 
 /// Wrapper around the lauberhorn C library.
 ///

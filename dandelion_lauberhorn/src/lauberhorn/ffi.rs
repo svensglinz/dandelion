@@ -3,9 +3,9 @@ use std::ffi::c_void;
 use machine_interface::function_driver::thread_utils::Engine;
 use machine_interface::memory_domain::Context;
 
-use crate::execution::execute_lauberhorn_function;
-use crate::lauberhorn_types::LauberhornServiceCtx;
-use crate::marshall;
+use crate::lauberhorn::execution::execute_lauberhorn_function;
+use crate::lauberhorn::types::LauberhornServiceCtx;
+use crate::lauberhorn::marshall;
 
 // ---------------------------------------------------------------------------
 // Marshal / unmarshal callbacks (registered in LAUBERHORN_SCHEMA)

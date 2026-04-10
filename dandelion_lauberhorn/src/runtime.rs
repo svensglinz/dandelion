@@ -1,15 +1,17 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
-
+use bson::de;
+use log::{debug, error};
 use dandelion_commons::FunctionId;
+use dandelion_commons::DandelionError;
 use dispatcher::function_registry::{FunctionRegistry, FunctionType};
 use machine_interface::function_driver::thread_utils::Engine;
 use machine_interface::function_driver::Metadata;
 use machine_interface::machine_config::{get_available_domains, DomainType, EngineType};
 use machine_interface::memory_domain::{MemoryDomain, MemoryResource};
-
-use crate::lauberhorn::Lauberhorn;
-use crate::lauberhorn_types::LauberhornServiceCtx;
+use dandelion_commons::DandelionResult;
+use crate::lauberhorn::lauberhorn::{Lauberhorn};
+use crate::lauberhorn::types::LauberhornServiceCtx;
 
 pub struct Runtime<E: Engine> {
     registry: Arc<FunctionRegistry>,
@@ -28,6 +30,8 @@ unsafe impl<E: Engine> Sync for Runtime<E> {}
 /// to ensure clean shutdown of lauberhorn and avoid dangling workers
 impl<E: Engine> Drop for Runtime<E> {
     fn drop(&mut self) {
+
+        debug!("shutting down lauberhorn workers");
         // ensure lauberhorn workers are stopped when runtime is dropped
         self.lauberhorn.join_workers();
     }
@@ -74,6 +78,10 @@ impl<E: Engine> Runtime<E> {
         proc_num: u32,
         listen_port: u16,
     ) -> Result<(), ()> {
+
+        debug!("Registering service for function '{}' with prog_num {}, prog_ver {}, proc_num {}, listen_port {}",
+            function_id, prog_num, prog_ver, proc_num, listen_port);
+
         let srv_ctx = Box::new(LauberhornServiceCtx {
             function_registry: self.registry.clone(),
             engines: self
@@ -99,9 +107,15 @@ impl<E: Engine> Runtime<E> {
         ctx_size: usize,
         path: String,
         metadata: Metadata,
-    ) -> Result<(), ()> {
+    ) -> DandelionResult<()> {
         let domain_type = engine_type.get_domain_type();
-        let memory_domain = self.domains.get(domain_type as usize).ok_or(())?;
+
+        debug!("Registering function '{}' with engine {:?} and domain {:?}",
+            function_name, engine_type, domain_type);
+
+        // clean this up!
+        let memory_domain = self.domains.get(domain_type as usize).ok_or(
+            DandelionError::FunctionRegistry(dandelion_commons::FunctionRegistryError::DuplicateInsert("error".into())))?;
 
         /// insert function into registry
         self.registry.insert_function(
@@ -111,12 +125,15 @@ impl<E: Engine> Runtime<E> {
             ctx_size,
             path,
             metadata,
-        );
-        Ok(())
+        )
     }
 
     /// Start lauberhorn workers (one per engine) and block until they finish.
     pub fn run(&mut self) -> Result<(), ()> {
+
+        debug!("Running runtime with {} engines and {} memory domains",
+            self.engines.len(), self.domains.len());
+
         for _ in &self.engines {
             self.lauberhorn.create_worker(None, None);
         }

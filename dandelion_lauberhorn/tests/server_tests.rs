@@ -2,7 +2,7 @@ use std::vec;
 
 use dandelion_server::{DandelionRequest,};
 use reqwest::blocking::{Client, Response};
-use dandelion_lauberhorn::http_schemas::RegisterFunction;
+use dandelion_lauberhorn::webserver::schemas::RegisterFunction;
 use bson::ser::to_vec;
 
 fn register_function(url: &str, obj: &RegisterFunction) -> Result<Response, ()> {
@@ -26,7 +26,7 @@ fn register_function_test() {
     let req = RegisterFunction {
         name: "test_func".to_string(),
         context_size: 1024,
-        engine_type: "mmu".to_string(),
+        engine_type: "Process".to_string(),
         local_path: "".to_string(),
         binary: vec![],
         input_sets: vec![],
