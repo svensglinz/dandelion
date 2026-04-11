@@ -24,6 +24,14 @@ pub struct RegisterFunction {
     pub output_sets: Vec<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RegisterService {
+    pub function_id: String,
+    pub prog_num: u32, 
+    pub prog_ver: u32,
+    pub proc_num: u32,
+    pub listen_port: u16
+}
 
 #[derive(Debug, Deserialize)]
 pub struct RegisterChain {

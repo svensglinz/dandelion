@@ -11,6 +11,8 @@ pub type FunctionId = Arc<String>;
 pub enum DandelionError {
     /// errors related to the dispatcher
     Dispatcher(DispatcherError),
+    // errors related to lauberhorn backend
+    LauberhornError(String),
     /// errors related to domains themselfs
     DomainError(DomainError),
     /// Error from a promise

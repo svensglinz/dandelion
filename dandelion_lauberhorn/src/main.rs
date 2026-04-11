@@ -1,4 +1,5 @@
 
+use core::error;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -7,7 +8,7 @@ use core_affinity::{self, CoreId};
 use dandelion_commons::records::Archive;
 use dandelion_lauberhorn::runtime::create_runtime;
 use dandelion_lauberhorn::webserver::http_frontend::{FUNCTION_FOLDER_PATH, TRACING_ARCHIVE, service_loop};
-use log::{info, warn};
+use log::{info, warn, error, debug};
 use machine_interface::machine_config::DomainType;
 use machine_interface::memory_domain::MemoryResource;
 use tokio::runtime::Builder;
@@ -16,6 +17,7 @@ use tokio::runtime::Builder;
 // Initialization helpers
 // ---------------------------------------------------------------------------
 
+/// initialize logging with env_logger, default level is warn, debug in debug builds
 fn init_logging() {
     let default_warn_level = if cfg!(debug_assertions) {
         "debug"
@@ -80,6 +82,7 @@ fn print_features() {
     println!();
 }
 
+// ensure thsi is run even with ctrl+c etc... -> or again on startup ??
 fn cleanup() {
     if let Err(err) = std::fs::remove_dir_all(FUNCTION_FOLDER_PATH) {
         warn!("Removing function folder failed with: {}", err);
@@ -103,8 +106,10 @@ fn main() {
 
     TRACING_ARCHIVE
         .set(Archive::init())
-        .ok()
-        .expect("Failed to initialize tracing archive");
+        .map_err(|e| {
+            error!("Failed to initialize tracing archive");
+            std::process::exit(1);
+        });
 
     if platform::cpu::is_hyperthreading() {
         warn!(
@@ -120,10 +125,17 @@ fn main() {
     let memory_pool = init_memory_pool();
     
     // creating runtime 
-    let runtime = Arc::new(
-        create_runtime(memory_pool).expect("Failed to start lauberhorn runtime"),
-    );
-
+    info!("Creating Runtime with lauberhorn backend");
+    let runtime = match create_runtime(memory_pool) {
+        Ok(rt) => {
+            Arc::new(rt)
+        }
+        Err(e) => {
+            error!("Failed to create runtime: {}", e);
+            std::process::exit(1)
+        }
+    };
+    info!("Starting frontend HTTP server on port {}", config.port);
     let _guard = tokio_runtime.enter();
     print_features();
     tokio_runtime.block_on(service_loop(runtime, config.port));

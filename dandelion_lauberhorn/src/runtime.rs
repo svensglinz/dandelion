@@ -50,13 +50,14 @@ impl<E: Engine> Runtime<E> {
     ///
     /// Sets up engines, memory domains, function registry, and the lauberhorn
     /// RPC subsystem.
+    /// TODO: which kind of errror to return here ? DandelionError ? 
     pub fn init(
         memory_pool: BTreeMap<DomainType, MemoryResource>,
-    ) -> Result<Self, ()> {
+    ) -> DandelionResult<Self> {
         let engines: Vec<Box<E>> = vec![E::init(0).unwrap()];
         let domains = get_available_domains(memory_pool);
         let registry = Arc::new(FunctionRegistry::new(&domains));
-        let lauberhorn = Lauberhorn::init().map_err(|_| ())?;
+        let lauberhorn = Lauberhorn::init()?;
 
         Ok(Runtime {
             registry,
@@ -148,7 +149,7 @@ impl<E: Engine> Runtime<E> {
 /// do not need to name `MmuLoop` / `KvmLoop` / `CheriLoop`.
 pub fn create_runtime(
     memory_pool: BTreeMap<DomainType, MemoryResource>,
-) -> Result<Runtime<impl Engine>, ()> {
+) -> DandelionResult<Runtime<impl Engine>> {
     #[cfg(feature = "mmu")]
     {
         use machine_interface::function_driver::compute_driver::mmu::MmuLoop;

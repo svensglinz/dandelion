@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::time::Instant;
-
+use log::{debug, error};
 use dandelion_commons::records::Recorder;
 use dispatcher::function_registry::{FunctionInfo, FunctionType};
 use machine_interface::function_driver::functions::FunctionAlternative;
@@ -19,6 +19,12 @@ pub fn execute_lauberhorn_function<E: Engine>(
     req_ctx: *mut Context,
     _xid: i32,
 ) -> *mut Context {
+
+    debug!("Received request to execute function with context at {:p}", req_ctx);
+
+    // Q: how to handle errors here ? 
+    // we can't return a Result, but we also don't want to just panic and leak memory on the Rust side if something goes wrong
+    
     let service_ctx = unsafe { &*ctx };
     let registry = &service_ctx.function_registry;
 
@@ -33,6 +39,7 @@ pub fn execute_lauberhorn_function<E: Engine>(
         FunctionType::Function(ref func_info) => {
             execute_function(engine, func_info, unsafe { &*req_ctx }).unwrap()
         }
+        // or maybe return nullptr ? depends on how we want to handle errors in the FFI layer
         _ => panic!("Unsupported function type"),
     };
 

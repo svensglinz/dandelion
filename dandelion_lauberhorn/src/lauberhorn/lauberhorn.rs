@@ -5,6 +5,7 @@ use machine_interface::memory_domain::Context;
 
 use crate::lauberhorn::ffi::*;
 use crate::lauberhorn::types::LauberhornServiceCtx;
+use dandelion_commons::{DandelionResult, DandelionError};
 
 /// Wrapper around the lauberhorn C library.
 ///
@@ -23,13 +24,16 @@ pub const LAUBERHORN_SCHEMA: LauberhornSchema = LauberhornSchema {
 
 impl Lauberhorn {
     /// Initialize the lauberhorn RPC subsystem.
-    pub fn init() -> Result<Self, ()> {
+    pub fn init() -> DandelionResult<Self> {
         let ctx = LauberhornCtx::new();
-        unsafe { lauberhorn_init(&ctx) };
-        Ok(Lauberhorn {
-            ctx,
-            workers: Vec::new(),
-        })
+        match unsafe { lauberhorn_init(&ctx) } {
+            0 => Ok(Lauberhorn {
+                ctx, 
+                workers: Vec::new()
+            }),
+            // just some generic error code for now --> specialize and refine
+            _ => Err(DandelionError::LauberhornError("lauberhorn_init".into())),
+        }
     }
 
     /// Register a new RPC service backed by a dandelion function.

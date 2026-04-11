@@ -6,6 +6,7 @@ use machine_interface::memory_domain::Context;
 use crate::lauberhorn::execution::execute_lauberhorn_function;
 use crate::lauberhorn::types::LauberhornServiceCtx;
 use crate::lauberhorn::marshall;
+use log::{debug, error, warn};
 
 // ---------------------------------------------------------------------------
 // Marshal / unmarshal callbacks (registered in LAUBERHORN_SCHEMA)
@@ -18,6 +19,7 @@ pub unsafe extern "C" fn unmarshal(
     in_buf: *mut c_void,
     in_bytes: i32,
 ) -> i32 {
+    // should probably do logging here ? or done by runtiem ? 
     let ctx = out_ctx as *mut Context;
     if marshall::dandelion_unmarshal(ctx, in_buf as *const u8, in_bytes) {
         1

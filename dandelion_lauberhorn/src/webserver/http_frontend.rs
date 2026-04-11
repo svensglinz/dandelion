@@ -132,7 +132,7 @@ async fn register_function<E: Engine>(
         path_string, metadata,
     ) {
         Ok(_) => Ok(webutils::make_ok("Function registered successfully")),
-        Err(_) => Err(HandlerError::Internal("Function registration failed".into())),
+        Err(e) => Err(HandlerError::Internal(format!("Function registration failed: {}", e))),
     }
 }
 
