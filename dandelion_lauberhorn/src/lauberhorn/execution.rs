@@ -37,13 +37,17 @@ pub fn execute_lauberhorn_function<E: Engine>(
 
     let result_ctx = match func {
         FunctionType::Function(ref func_info) => {
-            execute_function(engine, func_info, unsafe { &*req_ctx }).unwrap()
+            execute_function(engine, func_info, unsafe { &*req_ctx })
         }
         // or maybe return nullptr ? depends on how we want to handle errors in the FFI layer
         _ => panic!("Unsupported function type"),
     };
 
-    Box::into_raw(Box::new(result_ctx))
+    // return ptr on success, null on error
+    match result_ctx {
+        Ok(ctx) => Box::into_raw(Box::new(ctx)),
+        Err(_) => std::ptr::null_mut()
+    }
 }
 
 
@@ -78,7 +82,10 @@ pub fn execute_function<E: Engine>(
             function.config.clone(),
             function_context,
             &vec!["test".to_string()]
-        ).unwrap()
+        ).map_err(|e| {
+            error!("Function execution failed: {}", e);
+            ()
+        })?
     };
     Ok(ctx)
 }

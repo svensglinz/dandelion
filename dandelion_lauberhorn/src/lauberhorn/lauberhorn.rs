@@ -2,7 +2,7 @@ use std::ffi::c_void;
 
 use machine_interface::function_driver::thread_utils::Engine;
 use machine_interface::memory_domain::Context;
-
+use log::debug; 
 use crate::lauberhorn::ffi::*;
 use crate::lauberhorn::types::LauberhornServiceCtx;
 use dandelion_commons::{DandelionResult, DandelionError};
@@ -16,9 +16,9 @@ pub struct Lauberhorn {
 }
 
 /// Static schema that tells lauberhorn how to marshal/unmarshal requests.
-pub const LAUBERHORN_SCHEMA: LauberhornSchema = LauberhornSchema {
-    call_func: marshal,
-    resp_func: unmarshal,
+pub static LAUBERHORN_SCHEMA: LauberhornSchema = LauberhornSchema {
+    call_func: unmarshal,
+    resp_func: marshal,
     call_size: std::mem::size_of::<Context>(),
 };
 
@@ -45,6 +45,13 @@ impl Lauberhorn {
         proc_num: u32,
         listen_port: u16,
     ) -> Result<i32, i32> {
+
+        debug!("LAUBERHORN_SCHEMA at {:p}: call_size={}, call_func={:p}, resp_func={:p}",
+            &LAUBERHORN_SCHEMA as *const _,
+            LAUBERHORN_SCHEMA.call_size,
+            LAUBERHORN_SCHEMA.call_func as *const (),
+            LAUBERHORN_SCHEMA.resp_func as *const ());
+
         let id = unsafe {
             lauberhorn_reg_srv(
                 &self.ctx,

@@ -23,6 +23,8 @@ core_affinity = "0.8"
 env_logger = "0.10.1"
 reqwest = { version = "0.13.2", features = ["blocking", "json"] }
 http = "1.4.0"
+xdr-codec = "0.4.4"
+byteorder = "1.5.0"
 
 [features]
 cheri = ["machine_interface/cheri", "dispatcher/cheri"]

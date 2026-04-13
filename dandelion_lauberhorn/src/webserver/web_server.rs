@@ -217,7 +217,14 @@ async fn service<E: Engine>(
 /// Accept connections and serve them with signal-based graceful shutdown.
 pub async fn service_loop<E: Engine + 'static>(runtime: Arc<Runtime<E>>, port: u16) {
     let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port));
-    let listener = TcpListener::bind(addr).await.unwrap();
+
+    // bind TCP listener
+    let Ok(listener) = TcpListener::bind(addr)
+    .await else {
+        error!("Failed to bind to address {}:{}", addr.ip(), addr.port());
+        return;
+    };
+    info!("HTTP server listening on {}", addr);
 
     // signal handlers for graceful shutdown
     let mut sigterm_stream = tokio::signal::unix::signal(SignalKind::terminate()).unwrap();

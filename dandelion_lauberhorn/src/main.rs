@@ -7,7 +7,7 @@ use dandelion_lauberhorn::platform;
 use core_affinity::{self, CoreId};
 use dandelion_commons::records::Archive;
 use dandelion_lauberhorn::runtime::create_runtime;
-use dandelion_lauberhorn::webserver::http_frontend::{FUNCTION_FOLDER_PATH, TRACING_ARCHIVE, service_loop};
+use dandelion_lauberhorn::webserver::web_server::{FUNCTION_FOLDER_PATH, TRACING_ARCHIVE, service_loop};
 use log::{info, warn, error, debug};
 use machine_interface::machine_config::DomainType;
 use machine_interface::memory_domain::MemoryResource;
@@ -126,17 +126,20 @@ fn main() {
     
     // creating runtime 
     info!("Creating Runtime with lauberhorn backend");
-    let runtime = match create_runtime(memory_pool) {
+    let mut runtime = match create_runtime(memory_pool) {
         Ok(rt) => {
-            Arc::new(rt)
+            rt // hack... should transform to arc already here and solve mutability issues in runtime instead of here
         }
         Err(e) => {
             error!("Failed to create runtime: {}", e);
             std::process::exit(1)
         }
     };
+    info!("Starting runtime");
+    runtime.run().unwrap(); 
+
     info!("Starting frontend HTTP server on port {}", config.port);
     let _guard = tokio_runtime.enter();
     print_features();
-    tokio_runtime.block_on(service_loop(runtime, config.port));
+    tokio_runtime.block_on(service_loop(Arc::new(runtime), config.port));
 }

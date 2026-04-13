@@ -37,3 +37,22 @@ pub struct RegisterService {
 pub struct RegisterChain {
     pub composition: String,
 }
+
+#[derive(Serialize, Deserialize)]
+pub struct DandelionRequest {
+    pub name: String,
+    pub sets: Vec<InputSet>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct InputSet {
+    pub identifier: String,
+    pub items: Vec<InputItem>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct InputItem {
+    pub identifier: String,
+    pub key: u32,
+    pub data: Vec<u8>,
+}

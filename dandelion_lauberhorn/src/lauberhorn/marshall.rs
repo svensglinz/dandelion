@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use dandelion_server::DandelionRequest;
+use log::debug;
 use machine_interface::memory_domain::bytes_context::BytesContext;
 pub use machine_interface::{
     memory_domain::{Context, ContextType},
@@ -52,7 +53,10 @@ pub fn dandelion_unmarshal(out_ctx: *mut Context, in_buf: *const u8, in_bytes: i
     let input = unsafe { std::slice::from_raw_parts(in_buf, in_bytes as usize) };
     match parse_req_ctx(input) {
         Ok((_function_name, context)) => {
-            unsafe { *out_ctx = context };
+            // Use ptr::write to avoid dropping the uninitialized memory
+            // that the C allocator placed at out_ctx.
+            unsafe { std::ptr::write(out_ctx, context) };
+            debug!("dandelion_unmarshal: parsed request successfully to {:?}", unsafe { &*out_ctx });
             true
         }
         Err(_) => false,

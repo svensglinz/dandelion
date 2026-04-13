@@ -20,6 +20,9 @@ pub struct Runtime<E: Engine> {
     domains: Vec<Arc<Box<dyn MemoryDomain>>>,
 }
 
+/// No-op callback matching `noop_cb` in the C header.
+pub unsafe extern "C" fn noop_cb(_worker_idx: i32) {}
+
 // SAFETY: Runtime is shared via Arc and accessed through &self methods only.
 // The raw pointers inside Lauberhorn are C FFI handles with a managed lifecycle
 // (init on creation, join_workers on drop) and are not mutated concurrently.
@@ -136,9 +139,8 @@ impl<E: Engine> Runtime<E> {
             self.engines.len(), self.domains.len());
 
         for _ in &self.engines {
-            self.lauberhorn.create_worker(None, None);
+            self.lauberhorn.create_worker(Some(noop_cb), Some(noop_cb));
         }
-        self.lauberhorn.join_workers();
         Ok(())
     }
 }
