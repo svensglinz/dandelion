@@ -7,16 +7,16 @@ use dandelion_lauberhorn::webserver::schemas::{RegisterFunction, RegisterService
 
 const MATMUL_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../machine_interface/tests/data/test_elf_mmu_x86_64_matmul",
+    "/../machine_interface/tests/data/test_elf_kvm_x86_64_matmul",
 );
 
 #[test]
 fn register_function_test() {
 
     let req = RegisterFunction {
-        name: "test_func".to_string(),
+        name: "test_func2".to_string(),
         context_size: 0x802_0000,
-        engine_type: "Process".to_string(),
+        engine_type: "Kvm".to_string(),
         local_path: "".to_string(),
         binary: std::fs::read(MATMUL_PATH).expect("Failed to read test function binary"),
         input_sets: vec![(String::from(""), None)],
@@ -33,7 +33,7 @@ fn register_function_test() {
 #[test]
 fn register_service_test() {
     let req = RegisterService {
-        function_id: "test_func".to_string(),
+        function_id: "test_func2".to_string(),
         prog_num: 1,
         prog_ver: 1,
         proc_num: 1,
@@ -55,7 +55,7 @@ fn invoke_service_test() {
     data.extend_from_slice(&i64::to_le_bytes(1));
 
     let mat_request = DandelionRequest {
-        name: "test_func".to_string(),
+        name: "test_func2".to_string(),
         sets: vec![InputSet {
             identifier: String::from(""),
             items: vec![InputItem {
@@ -66,6 +66,13 @@ fn invoke_service_test() {
         }]
     };
 
-    invoke_service("test_func", 1, 1, 1, "10.0.0.5", 5555, &mat_request)
+    for _ in 0..1000 {
+    invoke_service(
+        "test_func2",
+        1, 1, 1,
+        "10.0.0.5", 5555,
+        &mat_request
+    )
         .expect("Failed to invoke service");
+    }
 }

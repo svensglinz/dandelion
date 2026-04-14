@@ -44,7 +44,7 @@ impl Lauberhorn {
         prog_ver: u32,
         proc_num: u32,
         listen_port: u16,
-    ) -> Result<i32, i32> {
+    ) -> DandelionResult<i32> {
 
         debug!("LAUBERHORN_SCHEMA at {:p}: call_size={}, call_func={:p}, resp_func={:p}",
             &LAUBERHORN_SCHEMA as *const _,
@@ -64,13 +64,21 @@ impl Lauberhorn {
                 &LAUBERHORN_SCHEMA,
             )
         };
-        if id < 0 { Err(id) } else { Ok(id) }
+        if id < 0 { 
+            Err(DandelionError::LauberhornError("lauberhorn_reg_srv".into())) 
+        } else {
+             Ok(id) 
+        }
     }
 
     /// Deregister a previously registered RPC service.
-    pub fn deregister_service(&mut self, prog_num: u32) -> Result<i32, i32> {
+    pub fn deregister_service(&mut self, prog_num: u32) -> DandelionResult<i32> {
         let id = unsafe { lauberhorn_dereg_srv(&mut self.ctx, prog_num) };
-        if id < 0 { Err(id) } else { Ok(id) }
+        if id < 0 { 
+            Err(DandelionError::LauberhornError("lauberhorn_dereg_srv".into())) 
+        } else { 
+            Ok(id) 
+        }
     }
 
     /// Spawn a lauberhorn worker thread.

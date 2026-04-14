@@ -118,7 +118,7 @@ impl<E: Engine> Runtime<E> {
             function_name, engine_type, domain_type);
 
         // clean this up!
-        let memory_domain = self.domains.get(domain_type as usize).ok_or(
+        let memory_domain: &Arc<Box<dyn MemoryDomain>> = self.domains.get(domain_type as usize).ok_or(
             DandelionError::FunctionRegistry(dandelion_commons::FunctionRegistryError::DuplicateInsert("error".into())))?;
 
         /// insert function into registry
