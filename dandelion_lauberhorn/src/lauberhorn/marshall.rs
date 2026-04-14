@@ -70,6 +70,9 @@ pub fn dandelion_marshal(_in_ctx: *const Context, _out_buf: *mut u8, _out_buf_si
     debug!("dandelion_marshal: marshaling context at {:p} into buffer {:p} (size {})",
         _in_ctx, _out_buf, _out_buf_size);
 
+    // unmarshal the data here using hyper body (may have to adjust to not depend ont hese protocolls andmore --> serialize to byte buffer way before !)
+
+    
     // simply copy memory into the out_buffer ? or could we just rehook ptrs, 
     // else useless memory operation in case there is no output marshalling... ? 
     // unsafe { std::ptr::copy(marshalled_vec.as_ptr(), _out_buf, marshalled_vec.len()); }

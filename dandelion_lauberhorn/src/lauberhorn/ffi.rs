@@ -1,5 +1,6 @@
 use std::ffi::c_void;
 
+use bytes::Buf;
 use machine_interface::function_driver::thread_utils::Engine;
 use machine_interface::memory_domain::Context;
 use dandelion_server::DandelionBody;
@@ -69,28 +70,55 @@ pub unsafe extern "C" fn marshal(
     xdrs: *mut c_void,
     in_msg: *mut c_void,
 ) -> i32 {
-    let xdr = xdrs as *const XdrStream;
-    let out_buf = unsafe { (*xdr).x_private };
-    let out_buf_size = unsafe { (*xdr).x_handy } as i32;
+    let xdr = xdrs as *mut XdrStream;
+    
+    // This is the memory C allocated for us to fill
+    let out_buf_ptr = unsafe { (*xdr).x_private };
+    let out_buf_size = unsafe { (*xdr).x_handy } as usize;
 
-    debug!("marshal called: xdrs={:p}, in_msg={:p}, buf={:p}, size={}",
-        xdrs, in_msg, out_buf, out_buf_size);
+    let result = in_msg as *mut DandelionBody;
+    debug!("marshal called for DandelionBody {:?}, copy into buffer of len {}", unsafe { &*result }, out_buf_size);
 
-    if in_msg.is_null() {
-        error!("marshal: null in_msg pointer");
-        return 0;
+    // 1. Linearize the body into a temporary Rust Vec
+    let lin_resp = linearize_dandelion_body(unsafe { &mut *result });
+    debug!("Linearized response size: {}", lin_resp.len());
+    debug!("Response bytes: {:?}", lin_resp);
+    let data_len = lin_resp.len();
+
+    // 2. Safety Check: Does the data fit in the C-provided buffer?
+    if data_len > out_buf_size {
+        error!("Buffer overflow! Data size {} exceeds C buffer size {}", data_len, out_buf_size);
+        return 0; // Return FALSE to C
     }
 
-    let result = in_msg as *const DandelionBody;
-    debug!("marshal: got DandelionBody {:?}", unsafe { &*result });
-    // let ctx = in_msg as *const Context;
-    // marshall::dandelion_marshal(
-    //     unsafe { &*ctx },
-    //     out_buf as *mut u8,
-    //     out_buf_size,
-    // ) as i32
+    // 3. Copy the data into the C buffer
+    unsafe {
+        std::ptr::copy_nonoverlapping(lin_resp.as_ptr(), out_buf_ptr, data_len);
+        
+        // 4. Update the XDR position 
+        // We don't change x_private (the start), we just tell XDR we wrote X bytes.
+        // Depending on your XDR implementation, you might need to call an XDR 
+        // function to advance the cursor, but usually updating the position is enough.
+    }
 
-    0 // for now, we don't marshal responses back to the client, so just return 0
+    1 // Return TRUE to C
+}
+
+
+pub fn linearize_dandelion_body(body: &mut DandelionBody) -> Vec<u8> {
+    if let Some(mut buf) = body.buffer.take() {
+        let total_size = buf.remaining();
+        let mut linear_vec = Vec::with_capacity(total_size);
+
+        while buf.has_remaining() {
+            let chunk = buf.chunk();
+            linear_vec.extend_from_slice(chunk);
+            buf.advance(chunk.len());
+        }
+        linear_vec
+    } else {
+        Vec::new()
+    }
 }
 
 // ---------------------------------------------------------------------------

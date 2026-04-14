@@ -381,7 +381,7 @@ impl bytes::Buf for DandelionBuf {
 // sven: addded for testing
 #[derive(Debug)]
 pub struct DandelionBody {
-    buffer: Option<DandelionBuf>,
+    pub buffer: Option<DandelionBuf>,
 }
 
 impl DandelionBody {
