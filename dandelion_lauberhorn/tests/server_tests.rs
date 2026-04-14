@@ -1,5 +1,6 @@
 use std::vec;
-
+use dandelion_server::DandelionRequest;
+use dandelion_server::{InputSet, InputItem};
 mod common;
 use common::{register_function, register_service, invoke_service};
 use dandelion_lauberhorn::webserver::schemas::{RegisterFunction, RegisterService};
@@ -48,11 +49,23 @@ fn register_service_test() {
 
 #[test]
 fn invoke_service_test() {
-        // Prepare input data: two i64 values (e.g., matrix size and checksum)
-    let mut data = Vec::new();
-    data.extend_from_slice(&i64::to_le_bytes(1)); // matrix size or value
-    data.extend_from_slice(&i64::to_le_bytes(1)); // checksum or another value
 
-    invoke_service("test_func", 1, 1, 1, "10.0.0.5", 5555, Some(data))
+    let mut data = Vec::new();
+    data.extend_from_slice(&i64::to_le_bytes(1));
+    data.extend_from_slice(&i64::to_le_bytes(1));
+
+    let mat_request = DandelionRequest {
+        name: "test_func".to_string(),
+        sets: vec![InputSet {
+            identifier: String::from(""),
+            items: vec![InputItem {
+                identifier: String::from(""),
+                key: 0,
+                data: &data
+            }]
+        }]
+    };
+
+    invoke_service("test_func", 1, 1, 1, "10.0.0.5", 5555, &mat_request)
         .expect("Failed to invoke service");
 }

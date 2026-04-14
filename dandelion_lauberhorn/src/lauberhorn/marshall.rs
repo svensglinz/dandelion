@@ -67,5 +67,11 @@ pub fn dandelion_unmarshal(out_ctx: *mut Context, in_buf: *const u8, in_bytes: i
 ///
 /// TODO: serialize the context back into BSON for the RPC response.
 pub fn dandelion_marshal(_in_ctx: *const Context, _out_buf: *mut u8, _out_buf_size: i32) -> bool {
+    debug!("dandelion_marshal: marshaling context at {:p} into buffer {:p} (size {})",
+        _in_ctx, _out_buf, _out_buf_size);
+
+    // simply copy memory into the out_buffer ? or could we just rehook ptrs, 
+    // else useless memory operation in case there is no output marshalling... ? 
+    // unsafe { std::ptr::copy(marshalled_vec.as_ptr(), _out_buf, marshalled_vec.len()); }
     true
 }

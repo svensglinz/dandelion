@@ -66,7 +66,7 @@ pub fn invoke_service(
     proc_num: u32,
     ip_addr: &str,
     listen_port: u16,
-    data: Option<Vec<u8>>,
+    data: &DandelionRequest,
 ) -> Result<(), ()> {
     let header = OncRpcHeader {
         xid: 0,
@@ -83,27 +83,7 @@ pub fn invoke_service(
 
     let header_bytes = header.to_bytes();
 
-
-    let mut owned_data = data.unwrap_or_default();
-    let items = if !owned_data.is_empty() {
-        vec![dandelion_server::InputItem {
-            identifier: String::from(""),
-            key: 0,
-            data: &owned_data,
-        }]
-    } else {
-        vec![]
-    };
-
-    let body = DandelionRequest {
-        name: function_id.to_string(),
-        sets: vec![dandelion_server::InputSet {
-            identifier: String::from(""),
-            items,
-        }],
-    };
-
-    let body_bytes = to_vec(&body).expect("BSON serialization failed");
+    let body_bytes = to_vec(&data).expect("BSON serialization failed");
     let mut request_bytes = header_bytes;
     request_bytes.extend(body_bytes);
 

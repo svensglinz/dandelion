@@ -378,6 +378,8 @@ impl bytes::Buf for DandelionBuf {
     }
 }
 
+// sven: addded for testing
+#[derive(Debug)]
 pub struct DandelionBody {
     buffer: Option<DandelionBuf>,
 }
@@ -403,6 +405,9 @@ impl DandelionBody {
             }),
         };
     }
+
+    // sven - temporarily for testing, without timing info
+    
     pub fn from_vec(array: Vec<u8>) -> Self {
         return DandelionBody {
             buffer: Some(DandelionBuf {

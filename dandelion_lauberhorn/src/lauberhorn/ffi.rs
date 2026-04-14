@@ -2,7 +2,7 @@ use std::ffi::c_void;
 
 use machine_interface::function_driver::thread_utils::Engine;
 use machine_interface::memory_domain::Context;
-
+use dandelion_server::DandelionBody;
 use crate::lauberhorn::execution::execute_lauberhorn_function;
 use crate::lauberhorn::types::LauberhornServiceCtx;
 use crate::lauberhorn::marshall;
@@ -52,11 +52,11 @@ pub unsafe extern "C" fn unmarshal(
     }
 
     let ctx = out_msg as *mut Context;
-    if marshall::dandelion_unmarshal(ctx, in_buf as *const u8, in_bytes) {
-        1   // TRUE
-    } else {
-        0   // FALSE
-    }
+    marshall::dandelion_unmarshal(
+        ctx,
+        in_buf as *const u8,
+        in_bytes
+    ) as i32 
 }
 
 /// Marshal callback – matches `xdrproc_t` signature: `(XDR *, void *) -> bool_t`.
@@ -81,16 +81,16 @@ pub unsafe extern "C" fn marshal(
         return 0;
     }
 
-    let ctx = in_msg as *const Context;
-    if marshall::dandelion_marshal(
-        unsafe { &*ctx },
-        out_buf as *mut u8,
-        out_buf_size,
-    ) {
-        1   // TRUE
-    } else {
-        0   // FALSE
-    }
+    let result = in_msg as *const DandelionBody;
+    debug!("marshal: got DandelionBody {:?}", unsafe { &*result });
+    // let ctx = in_msg as *const Context;
+    // marshall::dandelion_marshal(
+    //     unsafe { &*ctx },
+    //     out_buf as *mut u8,
+    //     out_buf_size,
+    // ) as i32
+
+    0 // for now, we don't marshal responses back to the client, so just return 0
 }
 
 // ---------------------------------------------------------------------------
@@ -176,8 +176,8 @@ pub type LauberhornHandlerFn = unsafe extern "C" fn(
 
 /// RPC handler callback — dispatches into the typed dandelion execution path.
 pub unsafe extern "C" fn lauberhorn_function_handler<E: Engine>(
-    data: *mut c_void,
-    req: *mut c_void,
+    data: *mut c_void, // *mut LauberhornServiceCtx<E>
+    req: *mut c_void,  // *mut Context
     xid: i32,
 ) -> LauberhornMsg {
     let ctx = data as *mut LauberhornServiceCtx<E>;

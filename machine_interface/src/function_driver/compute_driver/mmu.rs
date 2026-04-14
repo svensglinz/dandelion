@@ -112,7 +112,7 @@ fn mmu_run_static(
     ));
 
     // create a new address space (child process) and pass the shared memory
-    let mut worker = Command::new(path)
+    let mut worker = Command::new(&path)
         .arg(cpu_slot.to_string())
         .arg(storage_id)
         .arg(offset.to_string())
@@ -123,7 +123,11 @@ fn mmu_run_static(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
-        .map_err(|_e| DandelionError::MmuWorkerError)?;
+        .map_err(|e| {
+            // currently fails with no such file or directory (for path above...)
+            eprintln!("Failed to spawn mmu worker process with path '{}', error: {}", &path, e);
+            DandelionError::MmuWorkerError
+        })?;
 
     // intercept worker's syscalls by ptrace
     let pid = Pid::from_raw(worker.id() as i32);
