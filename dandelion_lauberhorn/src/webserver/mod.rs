@@ -18,7 +18,10 @@ use router::route;
 // Webserver loop which handles incoming requests
 // ---------------------------------------------------------------------------
 
-pub async fn service_loop<E: Engine + 'static>(runtime: Arc<Runtime<E>>, port: u16) {
+pub async fn service_loop<E: Engine + 'static>(
+    runtime: Arc<Runtime<E>>,
+    port: u16,
+) {
     let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port));
 
     // bind TCP listener
@@ -31,8 +34,10 @@ pub async fn service_loop<E: Engine + 'static>(runtime: Arc<Runtime<E>>, port: u
     // signal handlers for graceful shutdown
     let mut sigterm_stream =
         tokio::signal::unix::signal(SignalKind::terminate()).unwrap();
-    let mut sigint_stream = tokio::signal::unix::signal(SignalKind::interrupt()).unwrap();
-    let mut sigquit_stream = tokio::signal::unix::signal(SignalKind::quit()).unwrap();
+    let mut sigint_stream =
+        tokio::signal::unix::signal(SignalKind::interrupt()).unwrap();
+    let mut sigquit_stream =
+        tokio::signal::unix::signal(SignalKind::quit()).unwrap();
 
     loop {
         tokio::select! {

@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use super::utils as webutils;
 use crate::runtime::Runtime;
-use crate::webserver::schemas::{RegisterChain, RegisterFunction, RegisterService};
+use crate::webserver::schemas::{
+    RegisterChain, RegisterFunction, RegisterService,
+};
 use dandelion_server::DandelionBody;
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
@@ -38,7 +40,10 @@ impl HandlerError {
 // Endpoint handlers
 // ---------------------------------------------------------------------------
 
-fn save_function_binary(name: &str, binary: &Vec<u8>) -> DandelionResult<String> {
+fn save_function_binary(
+    name: &str,
+    binary: &Vec<u8>,
+) -> DandelionResult<String> {
     std::fs::create_dir_all(FUNCTION_FOLDER_PATH).unwrap();
     let mut path_buff = PathBuf::from(FUNCTION_FOLDER_PATH);
     path_buff.push(name);
@@ -60,7 +65,9 @@ async fn collect_bytes(req: Request<Incoming>) -> Result<Bytes, HandlerError> {
         .collect()
         .await
         .map_err(|_| {
-            HandlerError::BadRequest("Failed to extract body from request".into())
+            HandlerError::BadRequest(
+                "Failed to extract body from request".into(),
+            )
         })?
         .to_bytes();
     Ok(bytes)
@@ -73,12 +80,20 @@ pub async fn register_composition<E: Engine>(
     let bytes = collect_bytes(req).await?;
 
     let request_map: RegisterChain = bson::from_slice(&bytes).map_err(|e| {
-        HandlerError::BadRequest(format!("Failed to deserialize request: {}", e))
+        HandlerError::BadRequest(format!(
+            "Failed to deserialize request: {}",
+            e
+        ))
     })?;
 
-    runtime.register_composition(&request_map.composition.as_str()).map_err(|e| {
-        HandlerError::Internal(format!("Failed to register composition: {}", e))
-    })?;
+    runtime.register_composition(&request_map.composition.as_str()).map_err(
+        |e| {
+            HandlerError::Internal(format!(
+                "Failed to register composition: {}",
+                e
+            ))
+        },
+    )?;
     return Ok(webutils::make_ok("Composition registered successfully"));
 }
 
@@ -88,9 +103,13 @@ pub async fn register_function<E: Engine>(
 ) -> Result<Response<DandelionBody>, HandlerError> {
     let bytes = collect_bytes(req).await?;
 
-    let request_map: RegisterFunction = bson::from_slice(&bytes).map_err(|e| {
-        HandlerError::BadRequest(format!("Failed to deserialize request: {}", e))
-    })?;
+    let request_map: RegisterFunction =
+        bson::from_slice(&bytes).map_err(|e| {
+            HandlerError::BadRequest(format!(
+                "Failed to deserialize request: {}",
+                e
+            ))
+        })?;
 
     let path_string = if !request_map.local_path.is_empty() {
         if let Err(err) = std::fs::File::open(&request_map.local_path) {
@@ -101,18 +120,24 @@ pub async fn register_function<E: Engine>(
         }
         request_map.local_path.clone()
     } else {
-        save_function_binary(&request_map.name, &request_map.binary).map_err(|e| {
-            HandlerError::Internal(format!("Failed to save function binary: {}", e))
-        })?
+        save_function_binary(&request_map.name, &request_map.binary).map_err(
+            |e| {
+                HandlerError::Internal(format!(
+                    "Failed to save function binary: {}",
+                    e
+                ))
+            },
+        )?
     };
 
-    let engine_type = crate::utils::engine::get_engine_type(&request_map.engine_type)
-        .map_err(|_| {
-            HandlerError::BadRequest(format!(
-                "Invalid engine type specified: {}",
-                request_map.engine_type
-            ))
-        })?;
+    let engine_type =
+        crate::utils::engine::get_engine_type(&request_map.engine_type)
+            .map_err(|_| {
+                HandlerError::BadRequest(format!(
+                    "Invalid engine type specified: {}",
+                    request_map.engine_type
+                ))
+            })?;
 
     let ctx_size = request_map.context_size as usize;
     let function_name = request_map.name.clone();
@@ -126,9 +151,10 @@ pub async fn register_function<E: Engine>(
         metadata,
     ) {
         Ok(_) => Ok(webutils::make_ok("Function registered successfully")),
-        Err(e) => {
-            Err(HandlerError::Internal(format!("Function registration failed: {}", e)))
-        }
+        Err(e) => Err(HandlerError::Internal(format!(
+            "Function registration failed: {}",
+            e
+        ))),
     }
 }
 
@@ -138,8 +164,10 @@ pub async fn register_service<E: Engine>(
 ) -> Result<Response<DandelionBody>, HandlerError> {
     let bytes = collect_bytes(req).await?;
 
-    let request_map: RegisterService = bson::from_slice(&bytes)
-        .map_err(|_| HandlerError::BadRequest("Failed to deserialize request".into()))?;
+    let request_map: RegisterService =
+        bson::from_slice(&bytes).map_err(|_| {
+            HandlerError::BadRequest("Failed to deserialize request".into())
+        })?;
 
     match runtime.register_service(
         Arc::new(request_map.function_id),
@@ -149,7 +177,9 @@ pub async fn register_service<E: Engine>(
         request_map.listen_port,
     ) {
         Ok(_) => Ok(webutils::make_ok("Service registered successfully")),
-        Err(_) => Err(HandlerError::BadRequest("Service registration failed".into())),
+        Err(_) => {
+            Err(HandlerError::BadRequest("Service registration failed".into()))
+        }
     }
 }
 

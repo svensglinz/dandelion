@@ -32,9 +32,10 @@ pub fn execute_lauberhorn_function<E: Engine>(
     req_ctx: *mut Context,
     _xid: i32,
 ) -> LauberhornExecResult {
-    debug!("Received request to execute function with context at {:?}", unsafe {
-        &*req_ctx
-    });
+    debug!(
+        "Received request to execute function with context at {:?}",
+        unsafe { &*req_ctx }
+    );
 
     // Q: how to handle errors here ?
     // we can't return a Result, but we also don't want to just panic and leak memory on the Rust side if something goes wrong
@@ -60,7 +61,9 @@ pub fn execute_lauberhorn_function<E: Engine>(
 
     let result_ctx = match func {
         FunctionType::Function(ref func_info) => {
-            execute_function(engine, func_info, unsafe { std::ptr::read(req_ctx) })
+            execute_function(engine, func_info, unsafe {
+                std::ptr::read(req_ctx)
+            })
         }
         // or maybe return nullptr ? depends on how we want to handle errors in the FFI layer
         _ => panic!("Unsupported function type"),
@@ -100,7 +103,10 @@ pub fn make_comp_set(ctx: Context) -> Vec<Option<CompositionSet>> {
         .enumerate()
         .map(|(function_set_id, data_option)| {
             data_option.as_ref().and_then(|_| {
-                Some(CompositionSet::from((function_set_id, vec![context_arc.clone()])))
+                Some(CompositionSet::from((
+                    function_set_id,
+                    vec![context_arc.clone()],
+                )))
             })
         })
         .collect();
@@ -122,16 +128,20 @@ pub fn execute_function<E: Engine>(
     func_info: &FunctionInfo,
     req_ctx: Context,
 ) -> Result<Context, ()> {
-    let variants =
-        func_info.alternatives.read().expect("Function registry lock is poisoned");
+    let variants = func_info
+        .alternatives
+        .read()
+        .expect("Function registry lock is poisoned");
 
     let engine_type = unsafe { (*engine).get_engine_type() };
     let variant = get_function_variant(engine_type, &variants)
         .expect("Requested function not supported on this engine");
 
-    let mut recorder = Recorder::new(Arc::new("lauberhorn".to_string()), Instant::now());
-    let function =
-        variant.load_function(false, &mut recorder).expect("Failed to load function");
+    let mut recorder =
+        Recorder::new(Arc::new("lauberhorn".to_string()), Instant::now());
+    let function = variant
+        .load_function(false, &mut recorder)
+        .expect("Failed to load function");
 
     // create function context
     let mut function_context = function
@@ -203,7 +213,9 @@ fn transfer_input_sets(
         }));
 
         if let Some(transfer_set) = transfer_option {
-            for (source_set_index, source_item_index, source_context) in transfer_set {
+            for (source_set_index, source_item_index, source_context) in
+                transfer_set
+            {
                 let _ = machine_interface::memory_domain::transfer_data_item(
                     function_context,
                     source_context,

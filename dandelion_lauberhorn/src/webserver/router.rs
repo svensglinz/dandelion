@@ -20,8 +20,12 @@ pub async fn route<E: Engine>(
     info!("Incoming HTTP request: {} {}", req.method(), req.uri().path());
 
     let result = match req.uri().path() {
-        "/register/function" => handlers::register_function(req, &runtime).await,
-        "/register/composition" => handlers::register_composition(req, &runtime).await,
+        "/register/function" => {
+            handlers::register_function(req, &runtime).await
+        }
+        "/register/composition" => {
+            handlers::register_composition(req, &runtime).await
+        }
         "/register/service" => handlers::register_service(req, &runtime).await,
         "/stats" => handlers::serve_stats(req).await,
         _ => Ok(webutils::make_bad_request("Unknown endpoint")),

@@ -55,7 +55,8 @@ fn parse_req_ctx(input: &[u8]) -> Result<(String, Context), ()> {
 
     let bytes = Bytes::from(flat_data);
     let bytes_ctx = BytesContext::new(vec![bytes.clone()]);
-    let mut context = Context::new(ContextType::Bytes(Box::new(bytes_ctx)), bytes.len());
+    let mut context =
+        Context::new(ContextType::Bytes(Box::new(bytes_ctx)), bytes.len());
     context.content = content;
     Ok((function_name, context))
 }
@@ -70,15 +71,17 @@ pub fn dandelion_unmarshal(
     in_buf: *const u8,
     in_bytes: i32,
 ) -> bool {
-    let input = unsafe { std::slice::from_raw_parts(in_buf, in_bytes as usize) };
+    let input =
+        unsafe { std::slice::from_raw_parts(in_buf, in_bytes as usize) };
     match parse_req_ctx(input) {
         Ok((_function_name, context)) => {
             // Use ptr::write to avoid dropping the uninitialized memory
             // that the C allocator placed at out_ctx.
             unsafe { std::ptr::write(out_ctx, context) };
-            debug!("dandelion_unmarshal: parsed request successfully to {:?}", unsafe {
-                &*out_ctx
-            });
+            debug!(
+                "dandelion_unmarshal: parsed request successfully to {:?}",
+                unsafe { &*out_ctx }
+            );
             true
         }
         Err(_) => false,

@@ -33,7 +33,10 @@ struct XdrStream {
 /// - `xdrs` is an XDR memory stream wrapping the raw payload bytes
 /// - `out_msg` is the pre-allocated output buffer (Context)
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn unmarshal(xdrs: *mut c_void, out_msg: *mut c_void) -> i32 {
+pub unsafe extern "C" fn unmarshal(
+    xdrs: *mut c_void,
+    out_msg: *mut c_void,
+) -> i32 {
     let xdr = xdrs as *const XdrStream;
     let in_buf = unsafe { (*xdr).x_private };
     let in_bytes = unsafe { (*xdr).x_handy } as i32;
@@ -74,7 +77,10 @@ unsafe extern "C" {
 
     pub fn lauberhorn_init(ctx: *const LauberhornCtx) -> i32;
 
-    pub fn lauberhorn_dereg_srv(ctx: *const LauberhornCtx, prog_num: u32) -> i32;
+    pub fn lauberhorn_dereg_srv(
+        ctx: *const LauberhornCtx,
+        prog_num: u32,
+    ) -> i32;
 
     pub fn lauberhorn_create_worker(
         ctx: *const LauberhornCtx,

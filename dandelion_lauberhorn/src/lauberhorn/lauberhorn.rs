@@ -70,7 +70,10 @@ impl Lauberhorn {
     }
 
     /// Deregister a previously registered RPC service.
-    pub fn deregister_service(&mut self, prog_num: u32) -> DandelionResult<i32> {
+    pub fn deregister_service(
+        &mut self,
+        prog_num: u32,
+    ) -> DandelionResult<i32> {
         let id = unsafe { lauberhorn_dereg_srv(&mut self.ctx, prog_num) };
         if id < 0 {
             Err(DandelionError::LauberhornError("lauberhorn_dereg_srv".into()))
@@ -85,7 +88,8 @@ impl Lauberhorn {
         init: Option<LauberhornUserCb>,
         fini: Option<LauberhornUserCb>,
     ) -> *mut LauberhornWorker {
-        let worker = unsafe { lauberhorn_create_worker(&mut self.ctx, init, fini) };
+        let worker =
+            unsafe { lauberhorn_create_worker(&mut self.ctx, init, fini) };
         self.workers.push(worker);
         worker
     }

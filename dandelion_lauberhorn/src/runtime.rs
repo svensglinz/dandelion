@@ -7,7 +7,9 @@ use dispatcher::function_registry::{FunctionRegistry, FunctionType};
 use log::debug;
 use machine_interface::function_driver::thread_utils::Engine;
 use machine_interface::function_driver::Metadata;
-use machine_interface::machine_config::{get_available_domains, DomainType, EngineType};
+use machine_interface::machine_config::{
+    get_available_domains, DomainType, EngineType,
+};
 use machine_interface::memory_domain::{MemoryDomain, MemoryResource};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -80,19 +82,32 @@ impl<E: Engine> Runtime<E> {
 
         let srv_ctx = Box::new(LauberhornServiceCtx {
             function_registry: self.registry.clone(),
-            engines: self.engines.iter().map(|e| &**e as *const E as *mut E).collect(),
+            engines: self
+                .engines
+                .iter()
+                .map(|e| &**e as *const E as *mut E)
+                .collect(),
             function_id: function_id.clone(),
             id: 0,
         });
 
         self.lauberhorn
-            .register_service(srv_ctx, prog_num, prog_ver, proc_num, listen_port)
+            .register_service(
+                srv_ctx,
+                prog_num,
+                prog_ver,
+                proc_num,
+                listen_port,
+            )
             .map(|_| ())
             .map_err(|_| ())
     }
 
     /// Register a composition with the runtime's function registry.
-    pub fn register_composition(&self, composition_desc: &str) -> DandelionResult<()> {
+    pub fn register_composition(
+        &self,
+        composition_desc: &str,
+    ) -> DandelionResult<()> {
         self.registry.insert_compositions(composition_desc)
     }
 
@@ -117,7 +132,9 @@ impl<E: Engine> Runtime<E> {
             .domains
             .get(domain_type as usize)
             .ok_or(DandelionError::FunctionRegistry(
-                dandelion_commons::FunctionRegistryError::DuplicateInsert("error".into()),
+                dandelion_commons::FunctionRegistryError::DuplicateInsert(
+                    "error".into(),
+                ),
             ))?;
 
         // insert function into registry

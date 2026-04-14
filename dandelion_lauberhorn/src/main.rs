@@ -55,7 +55,8 @@ fn main() {
     let features = system::get_configured_features();
     info!("Supported features: {:?}", features);
 
-    tokio_runtime.block_on(webserver::service_loop(Arc::new(runtime), config.port));
+    tokio_runtime
+        .block_on(webserver::service_loop(Arc::new(runtime), config.port));
 
     info!("Shutting down...");
     system::cleanup();

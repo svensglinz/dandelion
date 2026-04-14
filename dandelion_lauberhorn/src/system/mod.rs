@@ -37,7 +37,9 @@ pub fn init_memory_pool() -> BTreeMap<DomainType, MemoryResource> {
     ])
 }
 
-pub fn build_frontend_runtime(frontend_cores: Vec<u8>) -> tokio::runtime::Runtime {
+pub fn build_frontend_runtime(
+    frontend_cores: Vec<u8>,
+) -> tokio::runtime::Runtime {
     let mut builder = Builder::new_multi_thread();
     builder.enable_io();
     builder.worker_threads(frontend_cores.len());

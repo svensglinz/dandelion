@@ -41,21 +41,26 @@ impl RegisterFunction {
                         .into_iter()
                         .map(|(item_name, data_vec)| {
                             let item_size = data_vec.len();
-                            let mut new_context =
-                                ReadOnlyContext::new(data_vec.into_boxed_slice())
-                                    .unwrap();
+                            let mut new_context = ReadOnlyContext::new(
+                                data_vec.into_boxed_slice(),
+                            )
+                            .unwrap();
                             new_context.content.push(Some(DataSet {
                                 ident: name.clone(),
                                 buffers: vec![DataItem {
                                     ident: item_name,
-                                    data: Position { offset: 0, size: item_size },
+                                    data: Position {
+                                        offset: 0,
+                                        size: item_size,
+                                    },
                                     key: 0,
                                 }],
                             }));
                             Arc::new(new_context)
                         })
                         .collect();
-                    let composition_set = CompositionSet::from((0, data_contexts));
+                    let composition_set =
+                        CompositionSet::from((0, data_contexts));
                     (name, Some(composition_set))
                 } else {
                     (name, None)
