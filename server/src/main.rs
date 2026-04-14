@@ -112,6 +112,7 @@ async fn serve_request(
         warn!("request parsing failed with: {:?}", request_context_result);
     }
     // TODO make single enum, so we cannot have the None None or Some Some case
+    // Q: how to know when we want a composition ? 
     let (function_name, composition, request_context) = request_context_result.unwrap();
     let had_function_name = function_name.is_some();
     let function_id = Arc::new(function_name.unwrap_or_else(|| String::from("Composition")));

@@ -110,6 +110,14 @@ pub fn make_comp_set(ctx: Context) -> Vec<Option<CompositionSet>> {
     comp_sets 
 }
 
+pub fn execute_composition<E: Engine>(
+) {
+
+        // Q: How are compositions stored ? 
+        // and called ? by name or only by raw composition -> ie 
+        // have to parse with queue_unregistered_composition on every call ?
+}
+
 /// Execute a function on the given engine using the provided request context.
 /// // what shoudl we get back here ? 
 pub fn execute_function<E: Engine>(
@@ -198,7 +206,7 @@ fn transfer_input_sets(
 
         if let Some(transfer_set) = transfer_option {
             for (source_set_index, source_item_index, source_context) in transfer_set {
-                let transfer_result = machine_interface::memory_domain::transfer_data_item(
+                let _ = machine_interface::memory_domain::transfer_data_item(
                     function_context,
                     source_context,
                     set_index,

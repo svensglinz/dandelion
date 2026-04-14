@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use bson::de;
-use log::{debug, error};
+use log::{debug};
 use dandelion_commons::FunctionId;
 use dandelion_commons::DandelionError;
 use dispatcher::function_registry::{FunctionRegistry, FunctionType};
@@ -103,6 +102,11 @@ impl<E: Engine> Runtime<E> {
             .map_err(|_| ())
     }
 
+    /// Register a composition with the runtime's function registry.
+    pub fn register_composition(&self, composition_desc: &str) -> DandelionResult<()> {
+        self.registry.insert_compositions(composition_desc)
+    }
+    
     /// Register a function with the runtime's function registry.
     pub fn register_function(
         &self,
@@ -121,7 +125,7 @@ impl<E: Engine> Runtime<E> {
         let memory_domain: &Arc<Box<dyn MemoryDomain>> = self.domains.get(domain_type as usize).ok_or(
             DandelionError::FunctionRegistry(dandelion_commons::FunctionRegistryError::DuplicateInsert("error".into())))?;
 
-        /// insert function into registry
+        // insert function into registry
         self.registry.insert_function(
             Arc::new(function_name),
             engine_type,

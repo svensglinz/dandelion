@@ -14,7 +14,7 @@ pub const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
 pub fn init_tracing_archive() {
     TRACING_ARCHIVE
         .set(Archive::init())
-        .map_err(|e| {
+        .map_err(|_: Archive| {
             error!("Failed to initialize tracing archive");
             std::process::exit(1);
         });
