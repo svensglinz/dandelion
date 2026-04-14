@@ -1,4 +1,4 @@
-use machine_interface::machine_config::EngineType; 
+use machine_interface::machine_config::EngineType;
 
 /// Get engine type from string
 pub fn get_engine_type(name: &str) -> Result<EngineType, ()> {
@@ -13,4 +13,3 @@ pub fn get_engine_type(name: &str) -> Result<EngineType, ()> {
     };
     Ok(engine_type)
 }
-

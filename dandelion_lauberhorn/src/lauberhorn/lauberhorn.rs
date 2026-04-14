@@ -1,11 +1,11 @@
 use std::ffi::c_void;
 
-use machine_interface::function_driver::thread_utils::Engine;
-use machine_interface::memory_domain::Context;
-use log::debug; 
 use crate::lauberhorn::ffi::*;
 use crate::lauberhorn::types::LauberhornServiceCtx;
-use dandelion_commons::{DandelionResult, DandelionError};
+use dandelion_commons::{DandelionError, DandelionResult};
+use log::debug;
+use machine_interface::function_driver::thread_utils::Engine;
+use machine_interface::memory_domain::Context;
 
 /// Wrapper around the lauberhorn C library.
 ///
@@ -27,10 +27,7 @@ impl Lauberhorn {
     pub fn init() -> DandelionResult<Self> {
         let ctx = LauberhornCtx::new();
         match unsafe { lauberhorn_init(&ctx) } {
-            0 => Ok(Lauberhorn {
-                ctx, 
-                workers: Vec::new()
-            }),
+            0 => Ok(Lauberhorn { ctx, workers: Vec::new() }),
             // just some generic error code for now --> specialize and refine
             _ => Err(DandelionError::LauberhornError("lauberhorn_init".into())),
         }
@@ -45,12 +42,13 @@ impl Lauberhorn {
         proc_num: u32,
         listen_port: u16,
     ) -> DandelionResult<i32> {
-
-        debug!("LAUBERHORN_SCHEMA at {:p}: call_size={}, call_func={:p}, resp_func={:p}",
+        debug!(
+            "LAUBERHORN_SCHEMA at {:p}: call_size={}, call_func={:p}, resp_func={:p}",
             &LAUBERHORN_SCHEMA as *const _,
             LAUBERHORN_SCHEMA.call_size,
             LAUBERHORN_SCHEMA.call_func as *const (),
-            LAUBERHORN_SCHEMA.resp_func as *const ());
+            LAUBERHORN_SCHEMA.resp_func as *const ()
+        );
 
         let id = unsafe {
             lauberhorn_reg_srv(
@@ -64,20 +62,20 @@ impl Lauberhorn {
                 &LAUBERHORN_SCHEMA,
             )
         };
-        if id < 0 { 
-            Err(DandelionError::LauberhornError("lauberhorn_reg_srv".into())) 
+        if id < 0 {
+            Err(DandelionError::LauberhornError("lauberhorn_reg_srv".into()))
         } else {
-             Ok(id) 
+            Ok(id)
         }
     }
 
     /// Deregister a previously registered RPC service.
     pub fn deregister_service(&mut self, prog_num: u32) -> DandelionResult<i32> {
         let id = unsafe { lauberhorn_dereg_srv(&mut self.ctx, prog_num) };
-        if id < 0 { 
-            Err(DandelionError::LauberhornError("lauberhorn_dereg_srv".into())) 
-        } else { 
-            Ok(id) 
+        if id < 0 {
+            Err(DandelionError::LauberhornError("lauberhorn_dereg_srv".into()))
+        } else {
+            Ok(id)
         }
     }
 

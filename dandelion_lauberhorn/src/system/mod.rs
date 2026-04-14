@@ -1,23 +1,27 @@
-use std::{collections::BTreeMap, sync::{OnceLock, atomic::{AtomicUsize, Ordering}}};
+use std::{
+    collections::BTreeMap,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        OnceLock,
+    },
+};
 
 use core_affinity::CoreId;
 use dandelion_commons::records::Archive;
+use log::{error, info, warn};
 use machine_interface::machine_config::DomainType;
 use machine_interface::memory_domain::MemoryResource;
 use tokio::runtime::Builder;
-use log::{info, warn, error};
 
 // constants
 pub static TRACING_ARCHIVE: OnceLock<Archive> = OnceLock::new();
 pub const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
 
 pub fn init_tracing_archive() {
-    TRACING_ARCHIVE
-        .set(Archive::init())
-        .map_err(|_: Archive| {
-            error!("Failed to initialize tracing archive");
-            std::process::exit(1);
-        });
+    TRACING_ARCHIVE.set(Archive::init()).map_err(|_: Archive| {
+        error!("Failed to initialize tracing archive");
+        std::process::exit(1);
+    });
 }
 
 pub fn init_memory_pool() -> BTreeMap<DomainType, MemoryResource> {

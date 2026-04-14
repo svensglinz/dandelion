@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use machine_interface::{
-    DataItem, DataSet, Position, composition::CompositionSet, 
-    function_driver::Metadata, memory_domain::read_only::ReadOnlyContext
+    composition::CompositionSet, function_driver::Metadata,
+    memory_domain::read_only::ReadOnlyContext, DataItem, DataSet, Position,
 };
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 fn default_path() -> String {
     String::new()
@@ -32,53 +32,48 @@ pub struct RegisterFunction {
 
 impl RegisterFunction {
     pub fn into_metadata(self) -> Metadata {
-            let input_sets = self
-        .input_sets
-        .into_iter()
-        .map(|(name, data)| {
-            if let Some(static_data) = data {
-                let data_contexts = static_data
-                    .into_iter()
-                    .map(|(item_name, data_vec)| {
-                        let item_size = data_vec.len();
-                        let mut new_context =
-                            ReadOnlyContext::new(data_vec.into_boxed_slice()).unwrap();
-                        new_context.content.push(Some(DataSet {
-                            ident: name.clone(),
-                            buffers: vec![DataItem {
-                                ident: item_name,
-                                data: Position {
-                                    offset: 0,
-                                    size: item_size,
-                                },
-                                key: 0,
-                            }],
-                        }));
-                        Arc::new(new_context)
-                    })
-                    .collect();
-                let composition_set = CompositionSet::from((0, data_contexts));
-                (name, Some(composition_set))
-            } else {
-                (name, None)
-            }
-        })
-        .collect();
+        let input_sets = self
+            .input_sets
+            .into_iter()
+            .map(|(name, data)| {
+                if let Some(static_data) = data {
+                    let data_contexts = static_data
+                        .into_iter()
+                        .map(|(item_name, data_vec)| {
+                            let item_size = data_vec.len();
+                            let mut new_context =
+                                ReadOnlyContext::new(data_vec.into_boxed_slice())
+                                    .unwrap();
+                            new_context.content.push(Some(DataSet {
+                                ident: name.clone(),
+                                buffers: vec![DataItem {
+                                    ident: item_name,
+                                    data: Position { offset: 0, size: item_size },
+                                    key: 0,
+                                }],
+                            }));
+                            Arc::new(new_context)
+                        })
+                        .collect();
+                    let composition_set = CompositionSet::from((0, data_contexts));
+                    (name, Some(composition_set))
+                } else {
+                    (name, None)
+                }
+            })
+            .collect();
 
-    Metadata {
-        input_sets,
-        output_sets: self.output_sets,
+        Metadata { input_sets, output_sets: self.output_sets }
     }
-}
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct RegisterService {
-    pub function_id: String, // how to refer to Compositions ? 
-    pub prog_num: u32, 
+    pub function_id: String, // how to refer to Compositions ?
+    pub prog_num: u32,
     pub prog_ver: u32,
     pub proc_num: u32,
-    pub listen_port: u16
+    pub listen_port: u16,
 }
 
 #[derive(Debug, Deserialize)]

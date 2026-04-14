@@ -1,11 +1,11 @@
 use std::ffi::c_void;
 
+use crate::lauberhorn::execution::execute_lauberhorn_function;
+use crate::lauberhorn::marshall;
+use crate::lauberhorn::types::LauberhornServiceCtx;
+use dandelion_server::DandelionBody;
 use machine_interface::function_driver::thread_utils::Engine;
 use machine_interface::memory_domain::Context;
-use dandelion_server::DandelionBody;
-use crate::lauberhorn::execution::execute_lauberhorn_function;
-use crate::lauberhorn::types::LauberhornServiceCtx;
-use crate::lauberhorn::marshall;
 
 // ---------------------------------------------------------------------------
 // Marshal / unmarshal callbacks (registered in LAUBERHORN_SCHEMA)
@@ -14,17 +14,17 @@ use crate::lauberhorn::marshall;
 /// XDR stream struct matching glibc's `struct __rpc_xdr`.
 /// Only used to extract the raw buffer pointer and remaining byte count
 /// from an `xdrmem`-backed stream.
-/// 
+///
 /// // temporary workaround until we remove C wrapper around XDR!
-/// 
+///
 #[repr(C)]
 struct XdrStream {
-    x_op: i32,               // enum xdr_op
-    x_ops: *const c_void,    // xdr_ops vtable pointer
-    x_public: *mut u8,       // users' data
-    x_private: *mut u8,      // current position in buffer
-    x_base: *mut u8,         // start of buffer
-    x_handy: u32,            // remaining bytes
+    x_op: i32,            // enum xdr_op
+    x_ops: *const c_void, // xdr_ops vtable pointer
+    x_public: *mut u8,    // users' data
+    x_private: *mut u8,   // current position in buffer
+    x_base: *mut u8,      // start of buffer
+    x_handy: u32,         // remaining bytes
 }
 
 /// Unmarshal callback – matches `xdrproc_t` signature: `(XDR *, void *) -> bool_t`.
@@ -33,40 +33,26 @@ struct XdrStream {
 /// - `xdrs` is an XDR memory stream wrapping the raw payload bytes
 /// - `out_msg` is the pre-allocated output buffer (Context)
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn unmarshal(
-    xdrs: *mut c_void,
-    out_msg: *mut c_void,
-) -> i32 {
-    
+pub unsafe extern "C" fn unmarshal(xdrs: *mut c_void, out_msg: *mut c_void) -> i32 {
     let xdr = xdrs as *const XdrStream;
     let in_buf = unsafe { (*xdr).x_private };
     let in_bytes = unsafe { (*xdr).x_handy } as i32;
 
     let ctx = out_msg as *mut Context;
-    marshall::dandelion_unmarshal(
-        ctx,
-        in_buf as *const u8,
-        in_bytes
-    ) as i32 
+    marshall::dandelion_unmarshal(ctx, in_buf as *const u8, in_bytes) as i32
 }
-
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn marshal(
-    xdrs: *mut c_void, // *mut XdrStream
+    xdrs: *mut c_void,   // *mut XdrStream
     in_msg: *mut c_void, // *mut DandelionBody
 ) -> i32 {
-
     let xdr = xdrs as *mut XdrStream;
     let out_buf_ptr = unsafe { (*xdr).x_private };
     let out_buf_size = unsafe { (*xdr).x_handy } as i32;
     let result = in_msg as *mut DandelionBody;
 
-    marshall::dandelion_marshal(
-        result,
-        out_buf_ptr,
-        out_buf_size
-    ) as i32
+    marshall::dandelion_marshal(result, out_buf_ptr, out_buf_size) as i32
 }
 
 // ---------------------------------------------------------------------------
@@ -88,10 +74,7 @@ unsafe extern "C" {
 
     pub fn lauberhorn_init(ctx: *const LauberhornCtx) -> i32;
 
-    pub fn lauberhorn_dereg_srv(
-        ctx: *const LauberhornCtx,
-        prog_num: u32,
-    ) -> i32;
+    pub fn lauberhorn_dereg_srv(ctx: *const LauberhornCtx, prog_num: u32) -> i32;
 
     pub fn lauberhorn_create_worker(
         ctx: *const LauberhornCtx,

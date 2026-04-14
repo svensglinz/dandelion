@@ -65,36 +65,48 @@ fn parse_req_ctx(input: &[u8]) -> Result<(String, Context), ()> {
 // ---------------------------------------------------------------------------
 
 /// Unmarshal an incoming byte buffer into a dandelion `Context`.
-pub fn dandelion_unmarshal(out_ctx: *mut Context, in_buf: *const u8, in_bytes: i32) -> bool {
+pub fn dandelion_unmarshal(
+    out_ctx: *mut Context,
+    in_buf: *const u8,
+    in_bytes: i32,
+) -> bool {
     let input = unsafe { std::slice::from_raw_parts(in_buf, in_bytes as usize) };
     match parse_req_ctx(input) {
         Ok((_function_name, context)) => {
             // Use ptr::write to avoid dropping the uninitialized memory
             // that the C allocator placed at out_ctx.
             unsafe { std::ptr::write(out_ctx, context) };
-            debug!("dandelion_unmarshal: parsed request successfully to {:?}", unsafe { &*out_ctx });
+            debug!("dandelion_unmarshal: parsed request successfully to {:?}", unsafe {
+                &*out_ctx
+            });
             true
         }
-        Err(_) => false
+        Err(_) => false,
     }
 }
 
 /// Marshal a `Context` into an outgoing byte buffer.
 ///
 /// TODO: serialize the context back into BSON for the RPC response.
-pub fn dandelion_marshal(in_ctx: *mut DandelionBody, out_buf: *mut u8, out_bytes: i32) -> bool {
-    
+pub fn dandelion_marshal(
+    in_ctx: *mut DandelionBody,
+    out_buf: *mut u8,
+    out_bytes: i32,
+) -> bool {
     debug!("dandelion_marshal: marshaling {:?}", unsafe { &*in_ctx });
 
     // 1. Linearize the body into a temporary Rust Vec
     let lin_resp = linearize_dandelion_body(unsafe { &mut *in_ctx });
-    
+
     let data_len = lin_resp.len();
 
     // 2. Safety Check: Does the data fit in the C-provided buffer?
     if data_len > out_bytes as usize {
-        error!("Buffer overflow! Data size {} exceeds C buffer size {}", data_len, out_bytes);
-        return false; 
+        error!(
+            "Buffer overflow! Data size {} exceeds C buffer size {}",
+            data_len, out_bytes
+        );
+        return false;
     }
     // 3. Copy the data into the C buffer
     unsafe {
