@@ -1,39 +1,12 @@
 use std::net::UdpSocket;
 use byteorder::{BigEndian, WriteBytesExt};
+use bytes::buf;
 use dandelion_server::DandelionRequest;
 use reqwest::blocking::{Client, Response};
 use dandelion_lauberhorn::webserver::schemas::{RegisterFunction, RegisterService};
 use bson::ser::to_vec;
+use dandelion_lauberhorn::lauberhorn::rpcclient::OncRpcHeader;
 
-pub struct OncRpcHeader {
-    pub xid: u32,
-    pub msg_type: u32,
-    pub rpc_version: u32,
-    pub prog_num: u32,
-    pub prog_ver: u32,
-    pub proc_num: u32,
-    pub cred_flavor: u32,
-    pub cred_length: u32,
-    pub verf_flavor: u32,
-    pub verf_length: u32,
-}
-
-impl OncRpcHeader {
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        bytes.write_u32::<BigEndian>(self.xid).unwrap();
-        bytes.write_u32::<BigEndian>(self.msg_type).unwrap();
-        bytes.write_u32::<BigEndian>(self.rpc_version).unwrap();
-        bytes.write_u32::<BigEndian>(self.prog_num).unwrap();
-        bytes.write_u32::<BigEndian>(self.prog_ver).unwrap();
-        bytes.write_u32::<BigEndian>(self.proc_num).unwrap();
-        bytes.write_u32::<BigEndian>(self.cred_flavor).unwrap();
-        bytes.write_u32::<BigEndian>(self.cred_length).unwrap();
-        bytes.write_u32::<BigEndian>(self.verf_flavor).unwrap();
-        bytes.write_u32::<BigEndian>(self.verf_length).unwrap();
-        bytes
-    }
-}
 
 pub fn register_function(url: &str, obj: &RegisterFunction) -> Result<Response, ()> {
     let client = Client::new();
@@ -86,11 +59,25 @@ pub fn invoke_service(
     let body_bytes = to_vec(&data).expect("BSON serialization failed");
     let mut request_bytes = header_bytes;
     request_bytes.extend(body_bytes);
-
+    
     let sock = UdpSocket::bind("10.0.0.5:0")
         .expect("Failed to bind UDP socket");
+
     sock.send_to(&request_bytes, format!("{}:{}", ip_addr, listen_port))
         .expect("Failed to send UDP request");
 
+    // let buf = &mut [0u8; 1024];
+    // let listen_sock = sock.recv_from(buf);
+// 
+    // match listen_sock {
+    //     Ok((size, _src)) => {
+    //         println!("Received response of size {} bytes", size);
+    //     },
+    //     Err(e) => {
+    //         eprintln!("Failed to receive response: {}", e);
+    //         return Err(());
+    //     }
+    // };
+    // TODO: print response from service if needed
     Ok(())
 }

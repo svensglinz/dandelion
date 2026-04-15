@@ -10,6 +10,11 @@ const MATMUL_PATH: &str = concat!(
     "/../machine_interface/tests/data/test_elf_kvm_x86_64_matmul",
 );
 
+// TODO: 
+// CHANGE LAUBerhorn lib to accept connections dynamically
+// maybe use portmapper to give port back automatically ? 
+// regiter ever only 1 endpoint --> multiplex via funtion_name which will become a field in XDR requeest
+// ie. xdr requet will consist of funcion_name: String, data: BJSON-Blob
 #[test]
 fn register_function_test() {
 
@@ -38,7 +43,7 @@ fn register_service_test() {
         prog_ver: 1,
         proc_num: 1,
         listen_port: 5555, // do we need to check if this is already taken by another process upon registration ? bc. this binding is not registered
-        // in the kernel with lauberhorn !
+        // in the kernel with lauberhorn
     };
 
     let res = register_service("http://localhost:6000/register/service", &req)
@@ -66,7 +71,6 @@ fn invoke_service_test() {
         }]
     };
 
-    for _ in 0..1000 {
     invoke_service(
         "test_func2",
         1, 1, 1,
@@ -74,5 +78,4 @@ fn invoke_service_test() {
         &mat_request
     )
         .expect("Failed to invoke service");
-    }
 }

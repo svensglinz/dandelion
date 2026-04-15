@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use dandelion_commons::{DandelionError, DandelionResult, FrontendError};
+use dandelion_commons::{DandelionError, DandelionResult};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -73,6 +73,10 @@ async fn collect_bytes(req: Request<Incoming>) -> Result<Bytes, HandlerError> {
     Ok(bytes)
 }
 
+/// Handler to register a new composition with the runtime
+/// 
+/// Deserializes the incoming request to `RegisterChain`
+/// and then registers the composition with the runtime
 pub async fn register_composition<E: Engine>(
     req: Request<Incoming>,
     runtime: &Runtime<E>,
@@ -97,6 +101,10 @@ pub async fn register_composition<E: Engine>(
     return Ok(webutils::make_ok("Composition registered successfully"));
 }
 
+/// Handler to register a new function with the runtime
+/// 
+/// Deserializes the incoming request to `RegisterFunction`
+/// and then registers the function with the runtime
 pub async fn register_function<E: Engine>(
     req: Request<Incoming>,
     runtime: &Runtime<E>,

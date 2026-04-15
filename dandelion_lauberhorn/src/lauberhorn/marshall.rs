@@ -1,5 +1,6 @@
 use bytes::{Buf, Bytes};
 use dandelion_server::{DandelionBody, DandelionRequest};
+use crate::webserver::schemas::DandelionDeserializeResponse;
 use log::{debug, error};
 use machine_interface::memory_domain::bytes_context::BytesContext;
 pub use machine_interface::{
@@ -31,6 +32,8 @@ pub fn linearize_dandelion_body(body: &mut DandelionBody) -> Vec<u8> {
 ///
 /// Lauberhorn RPC delivers each request as a single contiguous buffer,
 /// so this is a simplified single-frame variant of `BytesContext::from_bytes_vec`.
+/// // Q: is buffer persistent on Lauberhorn until request is finished executing ? 
+/// Yes: -> implement copy-free version
 fn parse_req_ctx(input: &[u8]) -> Result<(String, Context), ()> {
     let req: DandelionRequest = bson::from_slice(input).map_err(|_| ())?;
     let function_name = req.name.clone();
@@ -89,7 +92,9 @@ pub fn dandelion_unmarshal(
 }
 
 /// Marshal a `Context` into an outgoing byte buffer.
-///
+/// * `in_ctx`: DandelionBody to be serialized
+/// * `out_buf`: 
+/// * `out_bytes`: size of the output buffer in bytes
 /// TODO: serialize the context back into BSON for the RPC response.
 pub fn dandelion_marshal(
     in_ctx: *mut DandelionBody,
@@ -100,6 +105,7 @@ pub fn dandelion_marshal(
 
     // 1. Linearize the body into a temporary Rust Vec
     let lin_resp = linearize_dandelion_body(unsafe { &mut *in_ctx });
+    let deserialized: DandelionDeserializeResponse = bson::from_slice(&lin_resp).unwrap();
 
     let data_len = lin_resp.len();
 
@@ -115,5 +121,8 @@ pub fn dandelion_marshal(
     unsafe {
         std::ptr::copy_nonoverlapping(lin_resp.as_ptr(), out_buf, data_len);
     }
+    debug!("Marshalled response to {:?}", &lin_resp);
+    // deserialize for printing
+    debug!("Deserialized response: {:?}", deserialized);
     true
 }

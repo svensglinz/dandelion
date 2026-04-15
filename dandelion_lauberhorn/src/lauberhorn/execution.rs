@@ -1,18 +1,25 @@
 use crate::lauberhorn::types::LauberhornServiceCtx;
+use dandelion_commons::FunctionId;
 use dandelion_commons::records::Recorder;
 use dandelion_server::DandelionBody;
 use dispatcher::dispatcher::DispatcherInput;
 use dispatcher::function_registry::{FunctionInfo, FunctionType};
 use log::{debug, error};
-use machine_interface::composition::CompositionSet;
+use machine_interface::composition::{Composition, CompositionSet, JoinStrategy};
 use machine_interface::function_driver::functions::FunctionAlternative;
 use machine_interface::function_driver::thread_utils::Engine;
 use machine_interface::function_driver::Metadata;
 use machine_interface::machine_config::EngineType;
 use machine_interface::memory_domain::Context;
 use machine_interface::DataSet;
+use std::net::UdpSocket;
+use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
+use std::rc::{self, Rc};
 use std::sync::Arc;
 use std::time::Instant;
+use machine_interface::composition::FunctionDependencies; 
+use crate::lauberhorn::rpcclient::OncRpcClient;
 
 // type of pointer lauberhorn returns
 type LauberhornExecResult = *mut DandelionBody;
@@ -36,9 +43,6 @@ pub fn execute_lauberhorn_function<E: Engine>(
         "Received request to execute function with context at {:?}",
         unsafe { &*req_ctx }
     );
-
-    // Q: how to handle errors here ?
-    // we can't return a Result, but we also don't want to just panic and leak memory on the Rust side if something goes wrong
 
     let service_ctx = unsafe { &*ctx };
 
@@ -64,9 +68,14 @@ pub fn execute_lauberhorn_function<E: Engine>(
             execute_function(engine, func_info, unsafe {
                 std::ptr::read(req_ctx)
             })
+        },
+        FunctionType::Composition(comp_info) => {
+            // execute_composition() ?
+            todo!("Composition execution not implemented yet")
+        },
+        FunctionType::SystemFunction(ref func_info) => {
+            todo!("System function execution not implemented yet")
         }
-        // or maybe return nullptr ? depends on how we want to handle errors in the FFI layer
-        _ => panic!("Unsupported function type"),
     };
 
     let ctx = match result_ctx {
@@ -80,17 +89,17 @@ pub fn execute_lauberhorn_function<E: Engine>(
     // transform result into Vec<Option<CompositionSet>> and return pointer to it, or null on error
     let comp_set = make_comp_set(ctx);
 
-    // now turn it into a message we can return to the client
-    // (incl. marshalling ?) or just return plainly ?
-
+    // ISSUE: compositions expect a Vec<Option<CompositionSet>>,
+    // but we want to return a DandelionBody here, as this is what the user expects and what the marshaller can handle
+    // Q: do function result composition sets contain and information from other
+    // functions or can we deserialize to this from dandelionBody which we receive as RPC answer ? 
     let result = DandelionBody::new(comp_set, &Recorder {});
     Box::into_raw(Box::new(result))
 
-    // return ptr on success, null on error
-    // match result_ctx {
-    //     Ok(ctx) => Box::into_raw(Box::new(ctx)),
-    //     Err(_) => std::ptr::null_mut()
-    // }
+    // efficiency of serializing to network response -> building context from it again,
+    // then builidng as composition set again
+    // does this make sense
+
 }
 
 // wrapper that wraps a context into a CompositionSet ? (maybe maek this an attribute of it or how ? )
@@ -114,12 +123,147 @@ pub fn make_comp_set(ctx: Context) -> Vec<Option<CompositionSet>> {
     comp_sets
 }
 
-pub fn execute_composition<E: Engine>() {
+#[derive(Clone)]
+struct Task {
+    function_id: FunctionId,
 
-    // Q: How are compositions stored ?
-    // and called ? by name or only by raw composition -> ie
-    // have to parse with queue_unregistered_composition on every call ?
+    inputs: Vec<Option<CompositionSet>>, // maybe also need sharingInfo in here ? check with dispatcher
+    missing_input_ids: Vec<usize>, // do we need to store InputSetDescriptor::sharding ? 
+    missing_input_ids_optional: Vec<usize>,
+    join_info: (Vec<usize>, Vec<JoinStrategy>),
+    output_set_ids: Vec<Option<usize>>
 }
+
+impl Task {
+    pub fn from_dependency(
+        dependency: &FunctionDependencies,
+        inputs: &Vec<Option<CompositionSet>>,
+    ) -> Self {
+        let mut task = Task {
+            function_id: dependency.function.clone(),
+            inputs: vec![None; dependency.input_set_ids.len()],
+            missing_input_ids: Vec::new(),
+            missing_input_ids_optional: Vec::new(),
+            join_info: (Vec::new(), Vec::new()),
+            output_set_ids: Vec::new(),
+        };
+
+        for input_set in &dependency.input_set_ids {
+        // process each input set
+        if let Some(descriptor) = input_set {
+            if descriptor.optional {
+                task.missing_input_ids_optional.push(descriptor.composition_id);
+            } else {
+                task.missing_input_ids.push(descriptor.composition_id);
+            }
+        }
+    }
+        task
+    }
+
+    /// Returns true if all required inputs have been provided, false otherwise
+    pub fn is_ready(&self) -> bool {
+        self.missing_input_ids.is_empty()
+    }
+
+    /// provides an input set to the task, updating the missing counts accordingly
+    pub fn provide_input(&mut self, input_index: usize, set: Option<CompositionSet>) {
+        if let Some(set) = set {
+            self.inputs[input_index] = Some(set); // not sure if this is correct, as input_index may be large ? maybe just append ? 
+            if self.missing_input_ids.contains(&input_index) {
+                self.missing_input_ids.retain(|&id| id != input_index);
+            } else if self.missing_input_ids_optional.contains(&input_index) {
+                self.missing_input_ids_optional.retain(|&id| id != input_index);
+            }
+        }
+    }
+}
+
+pub fn execute_composition<E: Engine>(
+    composition: Composition,
+    inputs: Vec<Option<CompositionSet>>,
+    caching: bool,
+) {
+
+    // TODO: inject as dependency
+    let rpc_client = OncRpcClient::new(UdpSocket::bind("1.1.1.1:0").unwrap());
+
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<(u32, Vec<u8>)>();
+    let mut ready_tasks: VecDeque<Task> = VecDeque::new();
+    let mut blocked: HashMap<usize, Vec<Task>> = HashMap::new();
+
+    // initialize output sets based on composition output map and input availability
+    let output_number = composition.output_map.len();
+    let mut output_sets: Vec<Option<CompositionSet>> = Vec::with_capacity(output_number);
+    output_sets.resize(output_number, None);
+    for (input_index, input_set) in inputs.iter().enumerate() {
+        if let Some(out_index) = composition.output_map.get(&input_index) {
+            output_sets[*out_index] = input_set.clone();
+        }
+    }
+
+    //  create initially ready tasks based on composition dependencies and input availability
+    for dep in &composition.dependencies {
+        let task = Task::from_dependency(dep, &inputs); // could produce none ? 
+        if task.is_ready() {
+            ready_tasks.push_back(task);
+        } else {
+            // track which tasks are waiting for which inputs
+            for missing in task.missing_input_ids {
+                blocked.entry(missing).or_default().push(task.clone());
+            }
+            for missing in task.missing_input_ids_optional {
+                blocked.entry(missing).or_default().push(task.clone());
+            }
+        }
+    }
+
+    loop {
+        // blast out all currently ready tasks as RPC calls
+        
+        for task in ready_tasks.drain(..) {
+            // send out function via rpc
+            // .encode() needs to return a DandelionRequest that we can marshal and send out as an RPC request - see test cases
+            // actually here we should call first the equivalent of queue_function_sharded
+            // and then this function will trigger the RPC call where it currently does queue_function
+            // but essentially queue_function_sharded shoudl here already be done arsynchronously, so we can already pass the channel to it, 
+            // and it will simply pass it down to the RPC client ? 
+            rpc_client.send_request_async(100, &task.encode(), "server:port", done_tx.clone());
+        }
+
+        // block until any one response arrives
+        let (xid, response) = done_rx.recv().unwrap(); // or maybe already return it properly formatted here ? 
+        let (comp_set_idx, set) = parse_response(response); // what we get back from execution ! (probably via sharded...) comp_set_idx
+        // is the index of the composotion it belongs to 
+
+        // set belongs to end result
+        if let Some(&out_idx) = composition.output_map.get(&comp_set_idx) {
+            output_sets[out_idx] = set.clone();
+       }
+
+       // see if any other tasks become ready now
+       // remove all tasks form comp-set_idx as this dependency is now resopved
+       if let Some(waiting) = blocked.remove(&comp_set_idx) {
+            for mut task in waiting {
+                task.provide_input(comp_set_idx, set.clone());
+                if task.is_ready() {
+                     ready_tasks.push_back(task);
+                }
+            }
+         }
+    }
+    // check that all dependencies are resolved, if not, composition is not valid, as we have a cycle or missing input
+
+}
+
+// mocks queue_function_sharded for composition execution, as we need to trigger the RPC call here, and not in the dispatcher
+// tink if we want separate function for this or integrate into execute_composition directly ? 
+pub fn execute_function_sharded<E: Engine>(
+) {
+
+
+}
+
 
 /// Execute a function on the given engine using the provided request context.
 /// // what shoudl we get back here ?
@@ -139,6 +283,7 @@ pub fn execute_function<E: Engine>(
 
     let mut recorder =
         Recorder::new(Arc::new("lauberhorn".to_string()), Instant::now());
+
     let function = variant
         .load_function(false, &mut recorder)
         .expect("Failed to load function");
@@ -153,7 +298,7 @@ pub fn execute_function<E: Engine>(
     let request_arc = Arc::new(req_ctx);
     let inputs = (0..request_number)
         .map(|set_id| {
-            DispatcherInput::Set(CompositionSet::from((
+            DispatcherInput::Set(CompositionSet::from(( // dispatcherInput needed ? (transformed again below)
                 set_id,
                 vec![request_arc.clone()],
             )))

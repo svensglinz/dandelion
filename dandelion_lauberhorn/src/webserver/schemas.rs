@@ -81,26 +81,34 @@ pub struct RegisterService {
     pub listen_port: u16,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DandelionDeserializeResponse {
+    pub sets: Vec<InputSet>,
+    #[cfg(feature = "timestamp")]
+    pub timestamps: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct RegisterChain {
     pub composition: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DandelionRequest {
-    pub name: String,
+    pub name: String, // enum (name, compsition)
     pub sets: Vec<InputSet>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct InputSet {
     pub identifier: String,
     pub items: Vec<InputItem>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct InputItem {
     pub identifier: String,
     pub key: u32,
+    #[serde(with = "serde_bytes")]
     pub data: Vec<u8>,
 }

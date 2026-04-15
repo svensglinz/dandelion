@@ -32,6 +32,7 @@ unsafe impl<E: Engine> Sync for Runtime<E> {}
 
 /// guarantee that runtime unwinds lauberhorn workers on drop,
 /// to ensure clean shutdown of lauberhorn and avoid dangling workers
+/// TODO: SIGINT handler in Lauberhorn runtime already does this too
 impl<E: Engine> Drop for Runtime<E> {
     fn drop(&mut self) {
         debug!("shutting down lauberhorn workers");
@@ -57,6 +58,7 @@ impl<E: Engine> Runtime<E> {
     pub fn init(
         memory_pool: BTreeMap<DomainType, MemoryResource>,
     ) -> DandelionResult<Self> {
+        // TODO: implement properly based on #cores we want. Currently just 1 engine created for testing
         let engines: Vec<Box<E>> = vec![E::init(0).unwrap()];
         let domains = get_available_domains(memory_pool);
         let registry = Arc::new(FunctionRegistry::new(&domains));
@@ -80,8 +82,12 @@ impl<E: Engine> Runtime<E> {
         debug!("Registering service for function '{}' with prog_num {}, prog_ver {}, proc_num {}, listen_port {}",
             function_id, prog_num, prog_ver, proc_num, listen_port);
 
+        // create context for this service
+        // lauberhorn needs this to access runtime data structures when executing requests for this service
         let srv_ctx = Box::new(LauberhornServiceCtx {
             function_registry: self.registry.clone(),
+            // currently pass all engines as vector -> index into this by core_id this thing runs on
+            // probably need more reliable mapping core -> vector slot
             engines: self
                 .engines
                 .iter()
@@ -101,6 +107,7 @@ impl<E: Engine> Runtime<E> {
             )
             .map(|_| ())
             .map_err(|_| ())
+        // TODO: return DandelionResult
     }
 
     /// Register a composition with the runtime's function registry.

@@ -204,7 +204,9 @@ impl Dispatcher {
             missing_sets: BTreeMap<(usize, usize), (ShardingMode, bool)>,
         }
 
+
         // prepare output sets, that are also input sets
+        // SVEN: HOW is this based on index just in the position of the vector ? isnt there special indices for these composition sets ? 
         let output_number = composition.output_map.len();
         let mut output_sets = Vec::with_capacity(output_number);
         output_sets.resize(output_number, None);
@@ -230,7 +232,8 @@ impl Dispatcher {
                         sharding,
                         optional,
                     }) = in_set_decriptor
-                    {
+                    {   
+                        // SVEN: we need this composition_id and it was actually provided in the inputs!
                         if let Some(comp_set) = inputs.get(*composition_id) {
                             // this means the a non optional set is empty, so we can skip it and directly queue all outputs are ready none
                             if !*optional
@@ -246,10 +249,12 @@ impl Dispatcher {
                                 awaited_sets.push(Either::Left(ready(Ok((new_sets, Vec::new())))));
                                 return None;
                             }
+                            // SVEN: move composition set into ready inputs (and associate sharding mode with it) 
                             if let Some(set) = comp_set {
                                 ready_inputs[function_index] = Some((*sharding, set.clone()));
                             }
                         } else {
+                            // indicate that we still miss this dependency
                             missing_map
                                 .insert((*composition_id, function_index), (*sharding, *optional));
                         }
@@ -284,6 +289,7 @@ impl Dispatcher {
             num_running_functions,
             non_ready_functions.len()
         );
+
         while let Some(new_compositions_result) = awaited_sets.next().await {
             let (new_compositions, new_recorders) = new_compositions_result?;
             recorder.add_children(new_recorders);
@@ -293,9 +299,11 @@ impl Dispatcher {
                     composition_set_index,
                     composition_set_option.is_some()
                 );
+                // if we produced a set that is needed for global output
                 if let Some(output_index) = composition.output_map.get(&composition_set_index) {
                     output_sets[*output_index] = composition_set_option.clone();
                 }
+
                 non_ready_functions = non_ready_functions
                     .into_iter()
                     .filter_map(|mut args| {

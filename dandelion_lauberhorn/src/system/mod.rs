@@ -17,8 +17,9 @@ use tokio::runtime::Builder;
 pub static TRACING_ARCHIVE: OnceLock<Archive> = OnceLock::new();
 pub const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
 
+// dont exit here, only in main ideally
 pub fn init_tracing_archive() {
-    TRACING_ARCHIVE.set(Archive::init()).map_err(|_: Archive| {
+    let _ = TRACING_ARCHIVE.set(Archive::init()).map_err(|_: Archive| {
         error!("Failed to initialize tracing archive");
         std::process::exit(1);
     });

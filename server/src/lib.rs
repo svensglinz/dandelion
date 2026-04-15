@@ -24,6 +24,7 @@ pub struct DandelionDeserializeResponse<'data> {
     pub timestamps: String,
 }
 
+
 #[derive(Serialize, Deserialize)]
 pub struct InputSet<'data> {
     pub identifier: String,
