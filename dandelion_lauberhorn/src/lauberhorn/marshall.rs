@@ -1,6 +1,6 @@
 use bytes::{Buf, Bytes};
 use dandelion_server::{DandelionBody, DandelionRequest};
-use crate::webserver::schemas::DandelionDeserializeResponse;
+use crate::{lauberhorn::types::{DandelionArgs, DandelionRPCRequest}, webserver::schemas::DandelionDeserializeResponse};
 use log::{debug, error};
 use machine_interface::memory_domain::bytes_context::BytesContext;
 pub use machine_interface::{
@@ -28,67 +28,28 @@ pub fn linearize_dandelion_body(body: &mut DandelionBody) -> Vec<u8> {
 // Request parsing
 // ---------------------------------------------------------------------------
 
-/// Parse a BSON-serialized `DandelionRequest` into a `Context`.
-///
-/// Lauberhorn RPC delivers each request as a single contiguous buffer,
-/// so this is a simplified single-frame variant of `BytesContext::from_bytes_vec`.
-/// // Q: is buffer persistent on Lauberhorn until request is finished executing ? 
-/// Yes: -> implement copy-free version
-fn parse_req_ctx(input: &[u8]) -> Result<(String, Context), ()> {
-    let req: DandelionRequest = bson::from_slice(input).map_err(|_| ())?;
-    let function_name = req.name.clone();
-
-    let mut flat_data = Vec::new();
-    let mut content = Vec::new();
-
-    for set in req.sets {
-        let mut buffers = Vec::new();
-        for item in set.items {
-            let offset = flat_data.len();
-            let size = item.data.len();
-            flat_data.extend_from_slice(item.data);
-            buffers.push(DataItem {
-                ident: item.identifier,
-                key: item.key,
-                data: Position { offset, size },
-            });
-        }
-        content.push(Some(DataSet { ident: set.identifier, buffers }));
-    }
-
-    let bytes = Bytes::from(flat_data);
-    let bytes_ctx = BytesContext::new(vec![bytes.clone()]);
-    let mut context =
-        Context::new(ContextType::Bytes(Box::new(bytes_ctx)), bytes.len());
-    context.content = content;
-    Ok((function_name, context))
-}
 
 // ---------------------------------------------------------------------------
 // FFI-facing marshal / unmarshal
 // ---------------------------------------------------------------------------
 
 /// Unmarshal an incoming byte buffer into a dandelion `Context`.
+/// incoming: XDR { string, blob }
 pub fn dandelion_unmarshal(
-    out_ctx: *mut Context,
-    in_buf: *const u8,
-    in_bytes: i32,
+    out_ctx: *mut DandelionRPCRequest,
+    name: &String,
+    blob: &Vec<u8>,
 ) -> bool {
-    let input =
-        unsafe { std::slice::from_raw_parts(in_buf, in_bytes as usize) };
-    match parse_req_ctx(input) {
-        Ok((_function_name, context)) => {
-            // Use ptr::write to avoid dropping the uninitialized memory
-            // that the C allocator placed at out_ctx.
-            unsafe { std::ptr::write(out_ctx, context) };
-            debug!(
-                "dandelion_unmarshal: parsed request successfully to {:?}",
-                unsafe { &*out_ctx }
-            );
-            true
-        }
-        Err(_) => false,
-    }
+    let req: DandelionArgs = match bson::from_slice(blob) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    let rpc_req = DandelionRPCRequest {
+        function_name: name.clone(),
+        payload: req,
+    };
+    unsafe { std::ptr::write(out_ctx, rpc_req) };
+    true
 }
 
 /// Marshal a `Context` into an outgoing byte buffer.
@@ -99,7 +60,7 @@ pub fn dandelion_unmarshal(
 pub fn dandelion_marshal(
     in_ctx: *mut DandelionBody,
     out_buf: *mut u8,
-    out_bytes: i32,
+    out_bytes: u32,
 ) -> bool {
     debug!("dandelion_marshal: marshaling {:?}", unsafe { &*in_ctx });
 

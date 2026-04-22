@@ -82,6 +82,7 @@ impl<E: Engine> Runtime<E> {
         debug!("Registering service for function '{}' with prog_num {}, prog_ver {}, proc_num {}, listen_port {}",
             function_id, prog_num, prog_ver, proc_num, listen_port);
 
+        // INFO AFTER REFACTOR: just store registration in a map to verify on calls if this funciton is actually registered
         // create context for this service
         // lauberhorn needs this to access runtime data structures when executing requests for this service
         let srv_ctx = Box::new(LauberhornServiceCtx {
@@ -93,7 +94,6 @@ impl<E: Engine> Runtime<E> {
                 .iter()
                 .map(|e| &**e as *const E as *mut E)
                 .collect(),
-            function_id: function_id.clone(),
             id: 0,
         });
 

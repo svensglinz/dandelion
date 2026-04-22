@@ -15,6 +15,7 @@ const MATMUL_PATH: &str = concat!(
 // maybe use portmapper to give port back automatically ? 
 // regiter ever only 1 endpoint --> multiplex via funtion_name which will become a field in XDR requeest
 // ie. xdr requet will consist of funcion_name: String, data: BJSON-Blob
+
 #[test]
 fn register_function_test() {
 
@@ -60,7 +61,7 @@ fn invoke_service_test() {
     data.extend_from_slice(&i64::to_le_bytes(1));
 
     let mat_request = DandelionRequest {
-        name: "test_func2".to_string(),
+        name: "test_func1".to_string(),
         sets: vec![InputSet {
             identifier: String::from(""),
             items: vec![InputItem {
@@ -72,7 +73,7 @@ fn invoke_service_test() {
     };
 
     invoke_service(
-        "test_func2",
+        "test_func1",
         1, 1, 1,
         "10.0.0.5", 5555,
         &mat_request

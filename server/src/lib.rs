@@ -11,7 +11,8 @@ use std::{io::IoSlice, sync::Arc};
 
 #[derive(Serialize, Deserialize)]
 pub struct DandelionRequest<'data> {
-    pub name: String,
+    pub name: String, // should this still be in the request or dont need anymore ? just sets ? as opaque blob ?
+    // bson serialized ? 
     #[serde(borrow)]
     pub sets: Vec<InputSet<'data>>,
 }

@@ -1,12 +1,11 @@
-use std::ffi::c_void;
-
-use crate::lauberhorn::execution::execute_lauberhorn_function;
+use std::ffi::{c_void};
+use log::{error};
+use crate::lauberhorn::{execution::execute_lauberhorn_function, types::DandelionRPCRequest};
 use crate::lauberhorn::marshall;
 use crate::lauberhorn::types::LauberhornServiceCtx;
 use dandelion_server::DandelionBody;
 use machine_interface::function_driver::thread_utils::Engine;
-use machine_interface::memory_domain::Context;
-
+use crate::utils::xdr;
 // ---------------------------------------------------------------------------
 // Marshal / unmarshal callbacks (registered in LAUBERHORN_SCHEMA)
 // ---------------------------------------------------------------------------
@@ -17,15 +16,7 @@ use machine_interface::memory_domain::Context;
 ///
 /// // temporary workaround until we remove C wrapper around XDR!
 ///
-#[repr(C)]
-struct XdrStream {
-    x_op: i32,            // enum xdr_op
-    x_ops: *const c_void, // xdr_ops vtable pointer
-    x_public: *mut u8,    // users' data
-    x_private: *mut u8,   // current position in buffer
-    x_base: *mut u8,      // start of buffer
-    x_handy: u32,         // remaining bytes
-}
+
 
 /// Unmarshal callback – matches `xdrproc_t` signature: `(XDR *, void *) -> bool_t`.
 ///
@@ -34,25 +25,39 @@ struct XdrStream {
 /// - `out_msg` is the pre-allocated output buffer (Context)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn unmarshal(
-    xdrs: *mut c_void,
+    xdrs: *mut xdr::XdrStream,
     out_msg: *mut c_void,
 ) -> i32 {
-    let xdr = xdrs as *const XdrStream;
-    let in_buf = unsafe { (*xdr).x_private };
-    let in_bytes = unsafe { (*xdr).x_handy } as i32;
+    // Q: who owns the memory to the blob ? 
+    if xdrs.is_null() {
+        return 0;
+    }
+    let xdr_stream = unsafe { &mut *xdrs };
+    // extract name
 
-    let ctx = out_msg as *mut Context;
-    marshall::dandelion_unmarshal(ctx, in_buf as *const u8, in_bytes) as i32
+    let name = xdr_stream.get_string();
+    let blob = xdr_stream.get_opaque();
+    if name.is_none() || blob.is_none() {
+        error!("Failed to unmarshal request: invalid XDR format");
+        return 0;
+    }
+    let out_req = out_msg as *mut DandelionRPCRequest;
+    marshall::dandelion_unmarshal(out_req, &name.unwrap(), &blob.unwrap()) as i32
 }
+
+// problem we have with just allocating 1 request on Lauberhorn side, is that
+// we only have 1 buffer to work with, so size must fit for ALL possible requests!
+// could alternatively have in buffer (name (max length) + ptr to blob) and then allocate the blob
+// with dandelion managed memory ? 
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn marshal(
-    xdrs: *mut c_void,   // *mut XdrStream
+    xdrs: *mut xdr::XdrStream,   // *mut XdrStream
     in_msg: *mut c_void, // *mut DandelionBody
 ) -> i32 {
-    let xdr = xdrs as *mut XdrStream;
-    let out_buf_ptr = unsafe { (*xdr).x_private };
-    let out_buf_size = unsafe { (*xdr).x_handy } as i32;
+    let xdr = unsafe { &mut *xdrs };
+    let out_buf_ptr = xdr.get_current_position();
+    let out_buf_size = xdr.get_remaining();
     let result = in_msg as *mut DandelionBody;
 
     marshall::dandelion_marshal(result, out_buf_ptr, out_buf_size) as i32
@@ -101,7 +106,7 @@ unsafe extern "C" {
 pub type LauberhornUserCb = unsafe extern "C" fn(i32);
 
 /// xdrproc_t: (XDR *, void *) -> bool_t
-type XdrProc = unsafe extern "C" fn(*mut c_void, *mut c_void) -> i32;
+type XdrProc = unsafe extern "C" fn(*mut xdr::XdrStream, *mut c_void) -> i32;
 
 /// Schema telling lauberhorn how to serialize/deserialize requests.
 #[repr(C)]
@@ -138,12 +143,12 @@ pub type LauberhornHandlerFn = unsafe extern "C" fn(
 /// RPC handler callback — dispatches into the typed dandelion execution path.
 pub unsafe extern "C" fn lauberhorn_function_handler<E: Engine>(
     data: *mut c_void, // *mut LauberhornServiceCtx<E>
-    req: *mut c_void,  // *mut Context
+    req: *mut c_void,  // *mut DandelionRPCRequest
     xid: i32,
 ) -> LauberhornMsg {
     let ctx = data as *mut LauberhornServiceCtx<E>;
-    let req_ctx = req as *mut Context;
+    let rpc_req = req as *mut DandelionRPCRequest;
 
     // returns NULL on error, else pointer to result context
-    execute_lauberhorn_function::<E>(ctx, req_ctx, xid) as LauberhornMsg
+    execute_lauberhorn_function::<E>(ctx, rpc_req, xid) as LauberhornMsg
 }

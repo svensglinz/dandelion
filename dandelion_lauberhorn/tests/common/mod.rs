@@ -1,12 +1,11 @@
 use std::net::UdpSocket;
-use byteorder::{BigEndian, WriteBytesExt};
-use bytes::buf;
 use dandelion_server::DandelionRequest;
+use log::{debug};
 use reqwest::blocking::{Client, Response};
 use dandelion_lauberhorn::webserver::schemas::{RegisterFunction, RegisterService};
 use bson::ser::to_vec;
 use dandelion_lauberhorn::lauberhorn::rpcclient::OncRpcHeader;
-
+use dandelion_lauberhorn::utils::xdr;
 
 pub fn register_function(url: &str, obj: &RegisterFunction) -> Result<Response, ()> {
     let client = Client::new();
@@ -56,10 +55,18 @@ pub fn invoke_service(
 
     let header_bytes = header.to_bytes();
 
-    let body_bytes = to_vec(&data).expect("BSON serialization failed");
+    let body_bytes = bson::to_vec(&data).expect("BSON serialization failed");
+
+    // create XDR stream for body
+    let mut buffer = vec![0u8; 1500];
+    let mut xdr_stream = xdr::XdrStream::new(xdr::XdrOp::Encode, &mut buffer);
+    xdr_stream.set_string(function_id);
+    xdr_stream.set_opaque(&body_bytes);
+
     let mut request_bytes = header_bytes;
-    request_bytes.extend(body_bytes);
-    
+    request_bytes.extend(xdr_stream.get_data());
+    debug!("Constructed XDR request of size {} bytes", xdr_stream.get_data().len());
+
     let sock = UdpSocket::bind("10.0.0.5:0")
         .expect("Failed to bind UDP socket");
 
