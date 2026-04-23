@@ -5,7 +5,7 @@ use dandelion_server::DandelionBody;
 use dispatcher::dispatcher::DispatcherInput;
 use dispatcher::function_registry::{FunctionInfo, FunctionType};
 use log::{debug, error};
-use machine_interface::composition::{Composition, CompositionSet, JoinStrategy};
+use machine_interface::composition::{CompositionSet, JoinStrategy};
 use machine_interface::function_driver::functions::FunctionAlternative;
 use machine_interface::function_driver::thread_utils::Engine;
 use machine_interface::function_driver::Metadata;
@@ -13,13 +13,10 @@ use machine_interface::machine_config::EngineType;
 use machine_interface::memory_domain::bytes_context::BytesContext;
 use machine_interface::memory_domain::{Context, ContextType};
 use machine_interface::{DataItem, DataSet};
-use std::net::UdpSocket;
-use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 use machine_interface::composition::FunctionDependencies; 
-use crate::lauberhorn::rpcclient::OncRpcClient;
-use bytes::{Buf, Bytes};
+use bytes::Bytes;
 
 // type of pointer lauberhorn returns
 type LauberhornExecResult = *mut DandelionBody;
@@ -112,11 +109,11 @@ pub fn execute_lauberhorn_function<E: Engine>(
         FunctionType::Function(ref func_info) => {
             execute_function(engine, func_info, context)
         },
-        FunctionType::Composition(comp_info) => {
+        FunctionType::Composition(_comp_info) => {
             // execute_composition() ?
             todo!("Composition execution not implemented yet")
         },
-        FunctionType::SystemFunction(ref func_info) => {
+        FunctionType::SystemFunction(ref _func_info) => {
             todo!("System function execution not implemented yet")
         }
     };
@@ -180,7 +177,7 @@ struct Task {
 impl Task {
     pub fn from_dependency(
         dependency: &FunctionDependencies,
-        inputs: &Vec<Option<CompositionSet>>,
+        _inputs: &Vec<Option<CompositionSet>>,
     ) -> Self {
         let mut task = Task {
             function_id: dependency.function.clone(),

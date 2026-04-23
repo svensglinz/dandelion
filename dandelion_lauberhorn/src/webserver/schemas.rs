@@ -72,6 +72,8 @@ impl RegisterFunction {
     }
 }
 
+// probably not needed anymore -> just reer to functions in the call 
+// if function name is invalid, we will return this as an error !
 #[derive(Debug, Deserialize, Serialize)]
 pub struct RegisterService {
     pub function_id: String, // how to refer to Compositions ?

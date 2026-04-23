@@ -8,6 +8,8 @@ pub enum XdrOp {
     Free = 2,
 }
 
+/// Struct representing an XDR stream
+/// Equivalemnt to XDR in C
 #[repr(C)]
 pub struct XdrStream {
     x_op: i32,            // enum xdr_op
@@ -50,22 +52,31 @@ impl XdrStream {
         }
     }
 
+    /// check if the stream was constructed for encoding
+    /// (ie. self.x_op == XdrOp::Encode)
     pub fn is_encode(&self) -> bool {
         self.op() == Some(XdrOp::Encode)
     }
 
+    /// check if the stream was constructed for decoding
+    /// (ie. self.x_op == XdrOp::Decode)
     pub fn is_decode(&self) -> bool {
         self.op() == Some(XdrOp::Decode)
     }
 
+    /// returns the remaining bytes to decode
+    /// if `self.is_decode() == true`, else 0 -> CHECK
     pub fn get_remaining(&self) -> u32 {
         self.x_handy
     }
 
+    ///
     pub fn get_current_position(&self) -> *mut u8 {
         self.x_private as *mut u8
     }
 
+    /// returns the size of the binary stream to
+    /// be decoded if `self.is_decode() == true` else 0
     pub fn size(&self) -> usize {
         (self.x_private as usize) - (self.x_base as usize)
     }
@@ -141,6 +152,9 @@ impl XdrStream {
         }
     }
 
+    /// append a value of type `u32` to the XDR stream
+    /// IMPORTANT: Operation is only valid on encoding streams
+    /// (ie. `self.is_encode() == true`)
     pub fn set_uint(&mut self, value: u32) -> bool {
         debug_assert!(self.is_encode(), "set_uint called on non-ENCODE stream");
         if !self.is_encode() {
@@ -151,6 +165,8 @@ impl XdrStream {
         unsafe { xdr_u_int(self, &mut out) != 0 }
     }
 
+    ///
+    /// 
     pub fn set_opaque(&mut self, data: &[u8]) -> bool {
         debug_assert!(self.is_encode(), "set_opaque called on non-ENCODE stream");
         if !self.is_encode() {
@@ -166,6 +182,8 @@ impl XdrStream {
         unsafe { xdr_opaque(self, data.as_ptr() as *mut c_char, data.len() as c_uint) != 0 }
     }
 
+    ///
+    /// 
     pub fn set_string(&mut self, value: &str) -> bool {
         self.set_opaque(value.as_bytes())
     }
@@ -175,7 +193,7 @@ impl XdrStream {
 // return 1 on success, 0 on failure
 #[link(name = "tirpc")]
 unsafe extern "C" {
-   fn xdr_u_int(xdrs: *mut XdrStream, up: *mut c_uint) -> i32;
+    fn xdr_u_int(xdrs: *mut XdrStream, up: *mut c_uint) -> i32;
     fn xdr_opaque(xdrs: *mut XdrStream, cp: *mut c_char, cnt: c_uint) -> i32;
-    unsafe fn xdrmem_create(xdrs: *mut XdrStream, buf: *mut c_char, len: c_uint, op: i32);
+    fn xdrmem_create(xdrs: *mut XdrStream, buf: *mut c_char, len: c_uint, op: i32);
 }

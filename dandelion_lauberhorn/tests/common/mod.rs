@@ -1,4 +1,5 @@
 use std::net::UdpSocket;
+use dandelion_lauberhorn::lauberhorn::types::DandelionArgs;
 use dandelion_server::DandelionRequest;
 use log::{debug};
 use reqwest::blocking::{Client, Response};
@@ -38,7 +39,7 @@ pub fn invoke_service(
     proc_num: u32,
     ip_addr: &str,
     listen_port: u16,
-    data: &DandelionRequest,
+    data: &DandelionArgs,
 ) -> Result<(), ()> {
     let header = OncRpcHeader {
         xid: 0,

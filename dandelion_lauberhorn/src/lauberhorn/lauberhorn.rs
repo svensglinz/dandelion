@@ -5,7 +5,6 @@ use crate::lauberhorn::types::LauberhornServiceCtx;
 use dandelion_commons::{DandelionError, DandelionResult};
 use log::debug;
 use machine_interface::function_driver::thread_utils::Engine;
-use machine_interface::memory_domain::Context;
 
 /// Wrapper around the lauberhorn C library.
 ///
@@ -19,14 +18,15 @@ pub struct Lauberhorn {
 pub static LAUBERHORN_SCHEMA: LauberhornSchema = LauberhornSchema {
     call_func: unmarshal,
     resp_func: marshal,
-    call_size: std::mem::size_of::<Context>(),
+    //call_size: std::mem::size_of::<Context>(),
+    call_size: 1500
 };
 
 impl Lauberhorn {
     /// Initialize the lauberhorn RPC subsystem.
     pub fn init() -> DandelionResult<Self> {
-        let ctx = LauberhornCtx::new();
-        match unsafe { lauberhorn_init(&ctx) } {
+        let mut ctx = LauberhornCtx::new();
+        match unsafe { lauberhorn_init(&mut ctx) } {
             0 => Ok(Lauberhorn { ctx, workers: Vec::new() }),
             // just some generic error code for now --> specialize and refine
             _ => Err(DandelionError::LauberhornError("lauberhorn_init".into())),
@@ -50,6 +50,7 @@ impl Lauberhorn {
             LAUBERHORN_SCHEMA.resp_func as *const ()
         );
 
+        // Todo(@Sven): make func, data, schema input available to runtime ? 
         let id = unsafe {
             lauberhorn_reg_srv(
                 &self.ctx,
@@ -88,8 +89,7 @@ impl Lauberhorn {
         init: Option<LauberhornUserCb>,
         fini: Option<LauberhornUserCb>,
     ) -> *mut LauberhornWorker {
-        let worker =
-            unsafe { lauberhorn_create_worker(&mut self.ctx, init, fini) };
+        let worker = unsafe { lauberhorn_create_worker(&mut self.ctx, init, fini) };
         self.workers.push(worker);
         worker
     }

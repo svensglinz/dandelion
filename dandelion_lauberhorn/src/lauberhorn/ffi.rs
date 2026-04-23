@@ -1,5 +1,5 @@
 use std::ffi::{c_void};
-use log::{error};
+use log::{debug, error};
 use crate::lauberhorn::{execution::execute_lauberhorn_function, types::DandelionRPCRequest};
 use crate::lauberhorn::marshall;
 use crate::lauberhorn::types::LauberhornServiceCtx;
@@ -28,7 +28,6 @@ pub unsafe extern "C" fn unmarshal(
     xdrs: *mut xdr::XdrStream,
     out_msg: *mut c_void,
 ) -> i32 {
-    // Q: who owns the memory to the blob ? 
     if xdrs.is_null() {
         return 0;
     }

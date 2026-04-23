@@ -58,12 +58,29 @@ impl<E: Engine> Runtime<E> {
     pub fn init(
         memory_pool: BTreeMap<DomainType, MemoryResource>,
     ) -> DandelionResult<Self> {
-        // TODO: implement properly based on #cores we want. Currently just 1 engine created for testing
-        let engines: Vec<Box<E>> = vec![E::init(0).unwrap()];
+
+        // TODO(@sven): implement properly based on #cores we want. Currently static allication of 2 engines
+        // for testing
+        let engines: Vec<Box<E>> = vec![E::init(0).unwrap(), E::init(1).unwrap()];
         let domains = get_available_domains(memory_pool);
         let registry = Arc::new(FunctionRegistry::new(&domains));
         let lauberhorn = Lauberhorn::init()?;
+        
+        // register unique handler invocation RPC
+        // TODO(@sven): use user configured values via config.rs in server crate
+        debug!("registering lauberhorn function handler under prog_num={}, prog_ver={}, proc_num={}, port={}", 1, 1, 1, 11111);
+        let srv_context = Box::new(LauberhornServiceCtx{
+            function_registry: registry.clone(),
+            engines: engines
+                .iter()
+                .map(|e| &**e as *const E as *mut E)
+                .collect(),
+            id: 0
+        });
 
+        lauberhorn.register_service(
+            srv_context, 1, 1, 1, 11111
+        )?;
         Ok(Runtime { registry, lauberhorn, engines, domains })
     }
 
@@ -79,6 +96,11 @@ impl<E: Engine> Runtime<E> {
         proc_num: u32,
         listen_port: u16,
     ) -> Result<(), ()> {
+
+        // get prog_num, prog_ver, proc_num, listen_port from config
+        // this is the 4 tuple under which we register ALL services
+        // and all it does is invoke the dispatch_function shim
+
         debug!("Registering service for function '{}' with prog_num {}, prog_ver {}, proc_num {}, listen_port {}",
             function_id, prog_num, prog_ver, proc_num, listen_port);
 

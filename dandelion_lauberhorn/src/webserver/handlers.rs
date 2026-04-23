@@ -176,7 +176,7 @@ pub async fn register_service<E: Engine>(
         bson::from_slice(&bytes).map_err(|_| {
             HandlerError::BadRequest("Failed to deserialize request".into())
         })?;
-
+    
     match runtime.register_service(
         Arc::new(request_map.function_id),
         request_map.prog_num,

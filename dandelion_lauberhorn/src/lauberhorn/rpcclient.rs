@@ -101,7 +101,7 @@ impl OncRpcClient {
             let mut buf = [0u8; 4096];
             loop {
                 // blocking recv
-                let (len, addr) = recv_socket.recv_from(&mut buf).unwrap();
+                let (len, _addr) = recv_socket.recv_from(&mut buf).unwrap();
                 let response = buf[..len].to_vec();
                 let (header, payload) = parse_rpc_response(&response).unwrap();
                 let xid = header.xid; 
