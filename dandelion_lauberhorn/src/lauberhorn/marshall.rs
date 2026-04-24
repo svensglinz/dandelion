@@ -58,32 +58,20 @@ pub fn dandelion_unmarshal(
 /// * `out_bytes`: size of the output buffer in bytes
 /// TODO: serialize the context back into BSON for the RPC response.
 pub fn dandelion_marshal(
-    in_ctx: *mut DandelionBody,
+    in_ctx: &mut DandelionBody,
     out_buf: *mut u8,
     out_bytes: u32,
-) -> bool {
-    debug!("dandelion_marshal: marshaling {:?}", unsafe { &*in_ctx });
+) -> Vec<u8> {
+    debug!("dandelion_marshal: marshaling {:?}", in_ctx);
 
     // 1. Linearize the body into a temporary Rust Vec
     let lin_resp = linearize_dandelion_body(unsafe { &mut *in_ctx });
     let deserialized: DandelionDeserializeResponse = bson::from_slice(&lin_resp).unwrap();
-
-    let data_len = lin_resp.len();
-
-    // 2. Safety Check: Does the data fit in the C-provided buffer?
-    if data_len > out_bytes as usize {
-        error!(
-            "Buffer overflow! Data size {} exceeds C buffer size {}",
-            data_len, out_bytes
-        );
-        return false;
-    }
-    // 3. Copy the data into the C buffer
-    unsafe {
-        std::ptr::copy_nonoverlapping(lin_resp.as_ptr(), out_buf, data_len);
-    }
+    
     debug!("Marshalled response to {:?}", &lin_resp);
     // deserialize for printing
     debug!("Deserialized response: {:?}", deserialized);
-    true
+
+    // 2. Copy the linearized bytes into the output buffer
+   lin_resp
 }

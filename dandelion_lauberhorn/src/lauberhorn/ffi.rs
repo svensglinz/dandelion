@@ -54,12 +54,23 @@ pub unsafe extern "C" fn marshal(
     xdrs: *mut xdr::XdrStream,   // *mut XdrStream
     in_msg: *mut c_void, // *mut DandelionBody
 ) -> i32 {
+
+    // if in_msg is null, execution failed, return 0
+    if in_msg.is_null() {
+        return 0;
+    }
+
     let xdr = unsafe { &mut *xdrs };
+
+
     let out_buf_ptr = xdr.get_current_position();
     let out_buf_size = xdr.get_remaining();
-    let result = in_msg as *mut DandelionBody;
+    let result = unsafe { &mut *(in_msg as *mut DandelionBody) };
 
-    marshall::dandelion_marshal(result, out_buf_ptr, out_buf_size) as i32
+    let serialized = marshall::dandelion_marshal(result, out_buf_ptr, out_buf_size);
+    xdr.set_opaque(serialized.as_slice());
+    
+    1
 }
 
 // ---------------------------------------------------------------------------

@@ -1,12 +1,13 @@
 use std::net::UdpSocket;
+use std::sync::mpsc;
+use std::time::Duration;
 use dandelion_lauberhorn::lauberhorn::types::DandelionArgs;
-use dandelion_server::DandelionRequest;
 use log::{debug};
 use reqwest::blocking::{Client, Response};
 use dandelion_lauberhorn::webserver::schemas::{RegisterFunction, RegisterService};
 use bson::ser::to_vec;
-use dandelion_lauberhorn::lauberhorn::rpcclient::OncRpcHeader;
 use dandelion_lauberhorn::utils::xdr;
+use dandelion_lauberhorn::utils::oncrpc;
 
 pub fn register_function(url: &str, obj: &RegisterFunction) -> Result<Response, ()> {
     let client = Client::new();
@@ -40,22 +41,8 @@ pub fn invoke_service(
     ip_addr: &str,
     listen_port: u16,
     data: &DandelionArgs,
-) -> Result<(), ()> {
-    let header = OncRpcHeader {
-        xid: 0,
-        msg_type: 0,
-        rpc_version: 2,
-        prog_num,
-        prog_ver,
-        proc_num,
-        cred_flavor: 0,
-        cred_length: 0,
-        verf_flavor: 0,
-        verf_length: 0,
-    };
-
-    let header_bytes = header.to_bytes();
-
+) -> Result<Vec<u8>, ()> {
+    
     let body_bytes = bson::to_vec(&data).expect("BSON serialization failed");
 
     // create XDR stream for body
@@ -64,28 +51,40 @@ pub fn invoke_service(
     xdr_stream.set_string(function_id);
     xdr_stream.set_opaque(&body_bytes);
 
-    let mut request_bytes = header_bytes;
-    request_bytes.extend(xdr_stream.get_data());
-    debug!("Constructed XDR request of size {} bytes", xdr_stream.get_data().len());
+    let mut rpc_msg = oncrpc::OncRpcCall::new(xdr_stream.get_data());
+    rpc_msg.set_identifier(prog_num, prog_ver, proc_num);
 
-    let sock = UdpSocket::bind("10.0.0.5:0")
-        .expect("Failed to bind UDP socket");
+    let sock = UdpSocket::bind("10.0.0.5:0").map_err(|_| ())?;
+    //sock.set_read_timeout(Some(Duration::from_secs(2))).map_err(|_| ())?;
 
-    sock.send_to(&request_bytes, format!("{}:{}", ip_addr, listen_port))
-        .expect("Failed to send UDP request");
+    // Spawn listener thread before sending so we don't miss a fast response.
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let listener_sock = sock.try_clone().map_err(|_| ())?;
+    std::thread::spawn(move || {
+        let mut buf = vec![0u8; 4096];
+        if let Ok((size, _src)) = listener_sock.recv_from(&mut buf) {
+            buf.truncate(size);
+            let _ = tx.send(buf);
+        }
+    });
 
-    // let buf = &mut [0u8; 1024];
-    // let listen_sock = sock.recv_from(buf);
-// 
-    // match listen_sock {
-    //     Ok((size, _src)) => {
-    //         println!("Received response of size {} bytes", size);
-    //     },
-    //     Err(e) => {
-    //         eprintln!("Failed to receive response: {}", e);
-    //         return Err(());
-    //     }
-    // };
-    // TODO: print response from service if needed
-    Ok(())
+    sock.send_to(&rpc_msg.to_network_bytes(), format!("{}:{}", ip_addr, listen_port))
+        .map_err(|_| ())?;
+
+    let response = rx.recv_timeout(Duration::from_secs(2)).map_err(|_| ())?;
+    if let Some(oncrpc::OncRpcMsg::Reply(response_msg)) = oncrpc::OncRpcMsg::from_network_bytes(&response) {
+        let payload = response_msg.get_payload();
+        let mut payload_vec = payload.to_vec();
+
+        // todo. check lifetimes here...
+
+        let mut xdr_stream = xdr::XdrStream::new(
+            xdr::XdrOp::Decode,
+            &mut payload_vec,
+        );
+        return xdr_stream.get_opaque().ok_or(());
+    } else {
+        debug!("Received invalid RPC response");
+        return Err(());
+    }
 }

@@ -20,6 +20,7 @@ pub struct XdrStream {
     x_handy: u32,         // remaining bytes
 }
 
+// TODO: separate into decode and encode streams ? 
 impl XdrStream {
 
     pub fn new(op: XdrOp, buffer: &mut [u8]) -> Self {
@@ -134,6 +135,7 @@ impl XdrStream {
     // also have a version that just returns length and a pointer to the data in the stream ? 
     pub fn get_opaque(&mut self) -> Option<Vec<u8>> {
         if let Some(length) = self.get_int() {
+            println!("LENGTH: {}", length);
             let mut buffer = vec![0u8; length as usize];
             let result = unsafe {
                 xdr_opaque(

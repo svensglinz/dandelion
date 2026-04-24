@@ -94,9 +94,14 @@ pub fn execute_lauberhorn_function<E: Engine>(
 
     // function must exist. If it doesnt, bug, as we
     // have to ensure we register function before we register the service that uses it
-    let func = registry
-        .get_function(&function_id)
-        .expect("Function not found in registry");
+    let func = match registry
+        .get_function(&function_id) {
+        Ok(f) => f,
+        Err(_) => {
+            error!("Function not found in registry");
+            return std::ptr::null_mut();
+        }
+    };
 
     // SAFETY: lauberhorn guarantees only one thread accesses each engine at a time.
     let engine: *mut E = service_ctx.engines[service_ctx.id];
