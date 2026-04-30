@@ -34,3 +34,22 @@
 /* this is the handler that is registered for simple functions,
 we can have a separate handler that executes compositiosn ?  */
 // or is this diff in => execute_function vs execute_composition (TBD) !
+
+
+
+
+async call framework
+
+lauberhorn_call_async(3-tuple, port, host, payload) -> int
+- how to deliver msg : if external -> IP packet ? does NIC assemble this ? / if internal , can skip this ? 
+- sent to lauberhorn via cache line as call
+- lauberhorn stores into in table (int = table slot) -> int
+- lauberhorn dispatches call
+- receives answer
+- buffers answer and marks slot as ready
+
+lauberhorn_await(uint64) -> message in cacheline ? 
+- block waits on cache line
+- if lauberhorn receives msg, -> replies on cache line // one cache line per worker core for async calls
+
+

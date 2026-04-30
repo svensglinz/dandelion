@@ -36,7 +36,6 @@ fn invoke_service_test() {
     data.extend_from_slice(&i64::to_le_bytes(1));
     data.extend_from_slice(&i64::to_le_bytes(1));
 
-    // Todo(@Sven): remove name from DandelionRequest
     let mat_request = DandelionArgs {
         sets: vec![InputSet {
             identifier: String::from(""),

@@ -431,3 +431,61 @@ fn get_function_variant(
 ) -> Option<Arc<FunctionAlternative>> {
     alternatives.iter().find(|a| a.engine == engine_type).cloned()
 }
+
+// idea to get the nested sets
+/*
+for t in tasks:
+    future = run_node(t) // reutrns a handle with all tasks it needs to run, which ones it has dispatched and which ones may still be waiting
+    futures.push(future)
+
+for future in futures: 
+    result = future.poll() // returns a list of tasks which are already done ? lots of polling ??? what if we have tasks that wstill need to run ? 
+
+all_nodes = [NodeState { undispatched, in_flight, results } for each node]
+
+struct Task {
+    completed
+    pending
+    not_dispatched
+}
+
+for all ready tasks:
+    task = prepare_task() // init it with what subtasks are pending (ie. individual shards)
+
+
+// dispatch all possible subtasks
+for t in tasks: 
+    for subtask in t:
+        map[id, t] = lauberhorn_try_call(subtask)
+
+// await any one
+loop:
+    id = lauberhorn_await_any()
+    t = map[id]
+    result = lauberhorn_reap(id)
+    t.mark_done(subtask, result)
+    if t.is_done():
+        // resolve new tasks that may depend on this one as we already have in the graph or resolve their dependnecy
+        // get new ready tasks and dispatch them as well
+        // have a list of tasks that we failed to spatch because no more free slots - try to disppatch theese now as well
+
+now all dependencies should be resolved
+loop:
+    // try to dispatch as many tasks as possible across all nodes
+    for node in all_nodes:
+        while node.has_undispatched() and free_slots > 0:
+            id = lauberhorn_async_call(node.next_task())
+            id_map[id] = (node, task_idx)
+            free_slots -= 1
+
+    // block until at least one completes
+    done_ids = lauberhorn_await_any()  // blocks until >=1 task done
+    for id in done_ids:
+        result = lauberhorn_reap(id)
+        node, idx = id_map[id]
+        node.results[idx] = result
+        free_slots += 1
+
+    if all_nodes.all(|n| n.done()):
+        break
+*/
