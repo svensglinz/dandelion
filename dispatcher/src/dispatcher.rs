@@ -204,9 +204,8 @@ impl Dispatcher {
             missing_sets: BTreeMap<(usize, usize), (ShardingMode, bool)>,
         }
 
-
         // prepare output sets, that are also input sets
-        // SVEN: HOW is this based on index just in the position of the vector ? isnt there special indices for these composition sets ? 
+        // SVEN: HOW is this based on index just in the position of the vector ? isnt there special indices for these composition sets ?
         let output_number = composition.output_map.len();
         let mut output_sets = Vec::with_capacity(output_number);
         output_sets.resize(output_number, None);
@@ -232,7 +231,7 @@ impl Dispatcher {
                         sharding,
                         optional,
                     }) = in_set_decriptor
-                    {   
+                    {
                         // SVEN: we need this composition_id and it was actually provided in the inputs!
                         if let Some(comp_set) = inputs.get(*composition_id) {
                             // this means the a non optional set is empty, so we can skip it and directly queue all outputs are ready none
@@ -249,7 +248,7 @@ impl Dispatcher {
                                 awaited_sets.push(Either::Left(ready(Ok((new_sets, Vec::new())))));
                                 return None;
                             }
-                            // SVEN: move composition set into ready inputs (and associate sharding mode with it) 
+                            // SVEN: move composition set into ready inputs (and associate sharding mode with it)
                             if let Some(set) = comp_set {
                                 ready_inputs[function_index] = Some((*sharding, set.clone()));
                             }

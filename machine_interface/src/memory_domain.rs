@@ -102,7 +102,6 @@ pub enum ContextState {
     Run(i32),
 }
 
-// Sven: Strange that context struct holds a field taht is named context... ?
 #[derive(Debug)]
 pub struct Context {
     pub context: ContextType,

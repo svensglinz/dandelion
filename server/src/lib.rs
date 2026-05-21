@@ -12,7 +12,7 @@ use std::{io::IoSlice, sync::Arc};
 #[derive(Serialize, Deserialize)]
 pub struct DandelionRequest<'data> {
     pub name: String, // should this still be in the request or dont need anymore ? just sets ? as opaque blob ?
-    // bson serialized ? 
+    // bson serialized ?
     #[serde(borrow)]
     pub sets: Vec<InputSet<'data>>,
 }
@@ -24,7 +24,6 @@ pub struct DandelionDeserializeResponse<'data> {
     #[cfg(feature = "timestamp")]
     pub timestamps: String,
 }
-
 
 #[derive(Serialize, Deserialize)]
 pub struct InputSet<'data> {
@@ -409,7 +408,7 @@ impl DandelionBody {
     }
 
     // sven - temporarily for testing, without timing info
-    
+
     pub fn from_vec(array: Vec<u8>) -> Self {
         return DandelionBody {
             buffer: Some(DandelionBuf {

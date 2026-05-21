@@ -1,10 +1,10 @@
 pub mod composition;
 pub mod function_driver;
-pub mod memory_domain;
-pub mod promise;
 /// Module contains all the information needed about available engines,
 /// contexts, and their compatibility with fast to look up structs
 pub mod machine_config;
+pub mod memory_domain;
+pub mod promise;
 
 #[cfg(any(feature = "cheri", feature = "mmu", feature = "kvm"))]
 mod interface;

@@ -7,13 +7,13 @@ extern crate alloc;
 use alloc::sync::Arc;
 use dandelion_commons::{records::Recorder, DandelionResult};
 
-pub mod thread_utils; 
 pub mod compute_driver;
 pub mod functions;
 mod load_utils;
 pub mod system_driver;
 #[cfg(test)]
 mod test_queue;
+pub mod thread_utils;
 
 #[derive(Debug, Clone, Copy)]
 pub enum ComputeResource {

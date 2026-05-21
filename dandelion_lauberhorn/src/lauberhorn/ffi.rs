@@ -1,77 +1,9 @@
-use std::ffi::{c_void};
-use log::{debug, error};
-use crate::lauberhorn::{execution::execute_lauberhorn_function, types::DandelionRPCRequest};
-use crate::lauberhorn::marshall;
+use std::ffi::{CString, c_char, c_int, c_void};
+use std::str::FromStr;
+use crate::lauberhorn::execution::dandelion_handler;
+use crate::lauberhorn::{types::DandelionRPCRequest};
 use crate::lauberhorn::types::LauberhornServiceCtx;
-use dandelion_server::DandelionBody;
 use machine_interface::function_driver::thread_utils::Engine;
-use crate::utils::xdr;
-// ---------------------------------------------------------------------------
-// Marshal / unmarshal callbacks (registered in LAUBERHORN_SCHEMA)
-// ---------------------------------------------------------------------------
-
-/// XDR stream struct matching glibc's `struct __rpc_xdr`.
-/// Only used to extract the raw buffer pointer and remaining byte count
-/// from an `xdrmem`-backed stream.
-///
-/// // temporary workaround until we remove C wrapper around XDR!
-///
-
-
-/// Unmarshal callback – matches `xdrproc_t` signature: `(XDR *, void *) -> bool_t`.
-///
-/// The C side calls this as `schema->call_func(&xdrs, out_msg)` where:
-/// - `xdrs` is an XDR memory stream wrapping the raw payload bytes
-/// - `out_msg` is the pre-allocated output buffer (Context)
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn unmarshal(
-    xdrs: *mut xdr::XdrStream,
-    out_msg: *mut c_void,
-) -> i32 {
-    if xdrs.is_null() {
-        return 0;
-    }
-    let xdr_stream = unsafe { &mut *xdrs };
-    // extract name
-
-    let name = xdr_stream.get_string();
-    let blob = xdr_stream.get_opaque();
-    if name.is_none() || blob.is_none() {
-        error!("Failed to unmarshal request: invalid XDR format");
-        return 0;
-    }
-    let out_req = out_msg as *mut DandelionRPCRequest;
-    marshall::dandelion_unmarshal(out_req, &name.unwrap(), &blob.unwrap()) as i32
-}
-
-// problem we have with just allocating 1 request on Lauberhorn side, is that
-// we only have 1 buffer to work with, so size must fit for ALL possible requests!
-// could alternatively have in buffer (name (max length) + ptr to blob) and then allocate the blob
-// with dandelion managed memory ? 
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn marshal(
-    xdrs: *mut xdr::XdrStream,   // *mut XdrStream
-    in_msg: *mut c_void, // *mut DandelionBody
-) -> i32 {
-
-    // if in_msg is null, execution failed, return 0
-    if in_msg.is_null() {
-        return 0;
-    }
-
-    let xdr = unsafe { &mut *xdrs };
-
-
-    let out_buf_ptr = xdr.get_current_position();
-    let out_buf_size = xdr.get_remaining();
-    let result = unsafe { &mut *(in_msg as *mut DandelionBody) };
-
-    let serialized = marshall::dandelion_marshal(result, out_buf_ptr, out_buf_size);
-    xdr.set_opaque(serialized.as_slice());
-    
-    1
-}
 
 // ---------------------------------------------------------------------------
 // C FFI bindings to liblauberhorn
@@ -81,13 +13,14 @@ pub unsafe extern "C" fn marshal(
 unsafe extern "C" {
     pub fn lauberhorn_reg_srv(
         ctx: *const LauberhornCtx,
-        func: LauberhornHandlerFn,
+        handler: LauberhornHandler,
         data: *mut c_void,
         prog_num: u32,
         prog_ver: u32,
         proc_num: u32,
         listen_port: u16,
-        schema: *const LauberhornSchema,
+        is_nested: bool,
+        rpc_codec: *const RpcCodec,
     ) -> i32;
 
     pub fn lauberhorn_init(ctx: *const LauberhornCtx) -> i32;
@@ -107,23 +40,161 @@ unsafe extern "C" {
         ctx: *const LauberhornCtx,
         worker: *mut LauberhornWorker,
     );
+
+    pub fn lauberhorn_await_any(
+        set:  *const AwaitSet, result: *mut LauberhornCompletion
+    ) -> bool;
+
+    pub fn lauberhorn_await_all(set: *const AwaitSet, results: *mut AwaitResult, len: usize) -> bool;
+
+    pub fn lauberhorn_call_async(
+        ep: *const LauberhornRpcEndpoint, payload: *const c_void,
+        payload_len: usize
+    ) -> i32;
 }
 
 // ---------------------------------------------------------------------------
-// Type definitions matching the C header
+// Type definitions 
 // ---------------------------------------------------------------------------
 
 pub type LauberhornUserCb = unsafe extern "C" fn(i32);
 
-/// xdrproc_t: (XDR *, void *) -> bool_t
-type XdrProc = unsafe extern "C" fn(*mut xdr::XdrStream, *mut c_void) -> i32;
+// lauberhorn_handler_func_t, lauberhorn_handler_free_t
+type LauberhornHandlerFunc = extern "C" fn(private: *mut c_void, msg: *mut c_void, xid: u32) -> *mut c_void;
+type LauberhornHandlerFree = extern "C" fn(msg: *mut c_void);
 
-/// Schema telling lauberhorn how to serialize/deserialize requests.
+// lauberhorn_handler_t
 #[repr(C)]
-pub struct LauberhornSchema {
-    pub call_func: XdrProc,
-    pub resp_func: XdrProc,
-    pub call_size: usize,
+#[derive(Clone, Copy)]
+pub struct LauberhornHandler {
+    pub func: LauberhornHandlerFunc,
+    pub free: LauberhornHandlerFree
+}
+
+/// Opaque handle to a lauberhorn worker thread.
+pub type LauberhornWorker = *mut c_void;
+/// Opaque handle to an RPC message.
+pub type LauberhornMsg = *mut c_void;
+
+type MarshalProc =  extern "C" fn (in_buf: *const c_void, out_buf: *mut c_void, in_buf_len: usize, private: *const c_void) -> i32;
+type UnmarshalProc = extern "C" fn(in_buf: *const c_void, out_buf: *mut *mut c_void, in_buf_len: usize, private: *const c_void) -> i32;
+type FreeProc = extern "C" fn(*mut c_void, kind: RpcFreeKind, private: *mut c_void);
+
+// rpc_free_kind_t
+#[repr(C)]
+pub enum RpcFreeKind {
+    RpcFreeCall = 0,
+    RpcFreeResp = 1
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RpcOps {
+    pub marshal_call: MarshalProc,
+    pub marshal_resp: MarshalProc,
+    pub unmarshal_call: UnmarshalProc,
+    pub unmarshal_resp: UnmarshalProc,
+    pub free: FreeProc,
+}
+
+// rpc_codec_t
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct RpcCodec {
+    pub ops: *const RpcOps, 
+    pub private: *const c_void
+}
+
+// await_set_t
+#[repr(C)]
+pub struct AwaitSet {
+    pending: usize
+}
+
+// lauberhorn_rpc_endpoint_t
+#[repr(C)]
+pub struct LauberhornRpcEndpoint {
+    daddr: *const c_char,
+    dport: u16,
+    prog_num: u32,
+    prog_ver: u32,
+    proc_num: u32,
+    codec: RpcCodec
+}
+
+use crate::lauberhorn::lauberhorn::RPC_CODEC;
+
+impl LauberhornRpcEndpoint {
+    pub fn new(
+        daddr: &str, dport: u16,  prog_num: u32,
+        prog_ver: u32, proc_num: u32
+    ) -> Self {
+
+        let c_str = CString::from_str(daddr).unwrap();
+        let daddr_ptr = c_str.into_raw();
+
+        LauberhornRpcEndpoint {
+            daddr: daddr_ptr,
+            dport: dport, 
+            prog_num: prog_num, 
+            prog_ver: prog_ver,
+            proc_num: proc_num, 
+            codec: RPC_CODEC
+        }
+    }
+}
+
+// to free the Cstring
+impl Drop for LauberhornRpcEndpoint {
+    fn drop(&mut self) {
+        if !self.daddr.is_null() {
+            unsafe {
+                let _ = CString::from_raw(self.daddr as *mut c_char);
+            }
+        }
+    }
+}
+
+impl AwaitSet {
+
+    pub fn new() -> Self {
+        AwaitSet { pending: 0 }
+    }
+
+    pub fn  add(&mut self, indices: &[i64]) {
+        for &idx in indices {
+            self.pending |= 1 << idx;
+        }
+    }
+
+    pub fn del(&mut self, indices: &[i64]) {
+        for &idx in indices {
+            self.pending &= !(1 << idx);
+        }
+    }
+
+    pub fn size(&self) -> u32 {
+        self.pending.count_ones()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.size() == 0
+    }
+}
+
+#[repr(C)]
+pub struct AwaitResult {
+    idx: c_int,
+    data: *mut c_void
+}
+
+impl AwaitResult {
+    pub fn new() -> Self {
+        AwaitResult {
+            idx: 0,
+            data: std::ptr::null_mut::<c_void>()
+        }
+    }
 }
 
 /// Opaque context handle returned by `lauberhorn_init`.
@@ -139,26 +210,51 @@ impl LauberhornCtx {
     }
 }
 
-/// Opaque handle to a lauberhorn worker thread.
-pub type LauberhornWorker = *mut c_void;
-/// Opaque handle to an RPC message.
-pub type LauberhornMsg = *mut c_void;
-/// Function pointer type for RPC service handlers.
-pub type LauberhornHandlerFn = unsafe extern "C" fn(
+#[repr(C)]
+pub struct LauberhornCompletion {
+    pub idx: i32,
+    pub data: *mut c_void
+}
+
+impl LauberhornCompletion {
+    pub fn new() -> Self {
+        LauberhornCompletion {
+            idx: 0,
+            data: 0 as *mut c_void
+        }
+    }
+}
+
+/// RPC handler invoked for nested function calls
+/// does the same as the regular handler, 
+/// but stores the result in an internal table, and returns
+/// the index to the caller where the result is stored
+pub extern "C" fn dandelion_nested_function_handler<E: Engine>(
     data: *mut c_void,
-    req: LauberhornMsg,
-    xid: i32,
-) -> LauberhornMsg;
+    req: *mut c_void, 
+    xid: u32
+) -> *mut c_void {
+
+    return 0 as *mut c_void; 
+}
+
 
 /// RPC handler callback — dispatches into the typed dandelion execution path.
-pub unsafe extern "C" fn lauberhorn_function_handler<E: Engine>(
+pub extern "C" fn dandelion_function_handler<E: Engine>(
     data: *mut c_void, // *mut LauberhornServiceCtx<E>
     req: *mut c_void,  // *mut DandelionRPCRequest
-    xid: i32,
-) -> LauberhornMsg {
-    let ctx = data as *mut LauberhornServiceCtx<E>;
-    let rpc_req = req as *mut DandelionRPCRequest;
+    xid: u32,
+) -> *mut c_void {
+    let ctx = unsafe {&mut  *(data as *mut LauberhornServiceCtx<E>) };
+    let rpc_req = unsafe { &mut *(req as *mut DandelionRPCRequest) };
 
     // returns NULL on error, else pointer to result context
-    execute_lauberhorn_function::<E>(ctx, rpc_req, xid) as LauberhornMsg
+    dandelion_handler::<E>(ctx, rpc_req) as LauberhornMsg
+}
+
+// called to free result
+pub extern "C" fn dandelion_function_free(ptr: *mut c_void) {
+    unsafe {
+        let _ = Box::from_raw(ptr);
+    }
 }

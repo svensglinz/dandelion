@@ -166,30 +166,31 @@ pub async fn register_function<E: Engine>(
     }
 }
 
-pub async fn register_service<E: Engine>(
-    req: Request<Incoming>,
-    runtime: &Runtime<E>,
-) -> Result<Response<DandelionBody>, HandlerError> {
-    let bytes = collect_bytes(req).await?;
-
-    let request_map: RegisterService =
-        bson::from_slice(&bytes).map_err(|_| {
-            HandlerError::BadRequest("Failed to deserialize request".into())
-        })?;
-    
-    match runtime.register_service(
-        Arc::new(request_map.function_id),
-        request_map.prog_num,
-        request_map.prog_ver,
-        request_map.proc_num,
-        request_map.listen_port,
-    ) {
-        Ok(_) => Ok(webutils::make_ok("Service registered successfully")),
-        Err(_) => {
-            Err(HandlerError::BadRequest("Service registration failed".into()))
-        }
-    }
-}
+// TODO(@Sven): NOT USED ANYMORE (since we register  all functions under the same handler !)
+// pub async fn register_service<E: Engine>(
+//     req: Request<Incoming>,
+//     runtime: &Runtime<E>,
+// ) -> Result<Response<DandelionBody>, HandlerError> {
+//     let bytes = collect_bytes(req).await?;
+// 
+//     let request_map: RegisterService =
+//         bson::from_slice(&bytes).map_err(|_| {
+//             HandlerError::BadRequest("Failed to deserialize request".into())
+//         })?;
+//     
+//     match runtime.register_service(
+//         Arc::new(request_map.function_id),
+//         request_map.prog_num,
+//         request_map.prog_ver,
+//         request_map.proc_num,
+//         request_map.listen_port,
+//     ) {
+//         Ok(_) => Ok(webutils::make_ok("Service registered successfully")),
+//         Err(_) => {
+//             Err(HandlerError::BadRequest("Service registration failed".into()))
+//         }
+//     }
+// }
 
 pub async fn serve_stats(
     _req: Request<Incoming>,

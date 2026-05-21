@@ -1,69 +1,120 @@
 use std::ffi::c_void;
 
-use crate::lauberhorn::ffi::*;
+use crate::lauberhorn::marshal::{dandelion_free, dandelion_marshal_call, dandelion_marshal_resp,
+    dandelion_unmarshal_call, dandelion_unmarshal_resp};
 use crate::lauberhorn::types::LauberhornServiceCtx;
 use dandelion_commons::{DandelionError, DandelionResult};
-use log::debug;
 use machine_interface::function_driver::thread_utils::Engine;
+
+use crate::lauberhorn::ffi::{AwaitResult, LauberhornCtx, LauberhornRpcEndpoint, LauberhornUserCb, LauberhornWorker,
+    RpcCodec, RpcOps, lauberhorn_await_all, lauberhorn_await_any, lauberhorn_call_async, lauberhorn_create_worker,
+    lauberhorn_dereg_srv, lauberhorn_init, lauberhorn_join_worker, lauberhorn_reg_srv, LauberhornCompletion, AwaitSet, }; 
+
+// TODO(@Sven): integrate these into the normal handler (execution) (1 function less)
+// as rn, dandelion_fucntion_handler just nicely prepares the arguments
+pub use crate::lauberhorn::ffi::{dandelion_function_handler, dandelion_function_free, LauberhornHandler};
 
 /// Wrapper around the lauberhorn C library.
 ///
 /// Manages the lifecycle of the lauberhorn RPC context and its worker threads.
+/// 
 pub struct Lauberhorn {
     workers: Vec<*mut LauberhornWorker>,
     ctx: LauberhornCtx,
 }
 
-/// Static schema that tells lauberhorn how to marshal/unmarshal requests.
-pub static LAUBERHORN_SCHEMA: LauberhornSchema = LauberhornSchema {
-    call_func: unmarshal,
-    resp_func: marshal,
-    //call_size: std::mem::size_of::<Context>(),
-    call_size: 1500
+unsafe impl Sync for RpcCodec {}
+pub static RPC_CODEC: RpcCodec = RpcCodec {
+    ops: &RpcOps {
+    marshal_call: dandelion_marshal_call,
+    marshal_resp: dandelion_marshal_resp, 
+    unmarshal_call: dandelion_unmarshal_call, 
+    unmarshal_resp: dandelion_unmarshal_resp,
+    free: dandelion_free,
+    },
+    private: 0 as *const c_void
 };
 
+
+pub fn call_async(ep: &LauberhornRpcEndpoint, payload: &[u8]) -> i32 {
+    unsafe {
+        // from ffi
+        lauberhorn_call_async(
+            ep as *const LauberhornRpcEndpoint,
+            payload.as_ptr() as *const c_void,
+            payload.len()
+        )
+    }
+}
+
+pub fn await_all(set: &AwaitSet) -> Option<Vec<AwaitResult>> {
+    
+    let mut await_results = Vec::with_capacity(set.size() as usize);
+    let result = unsafe { 
+        lauberhorn_await_all(set, await_results.as_mut_ptr(), set.size() as usize) };
+
+    if result {
+        unsafe { await_results.set_len(set.size() as usize); }
+        Some(await_results)
+    } else {
+        None 
+    }
+}
+
+pub fn await_any(set: &mut AwaitSet) -> Option<LauberhornCompletion> {
+
+    let mut await_result = LauberhornCompletion::new();
+
+    let res = unsafe { lauberhorn_await_any(set, &mut await_result as *mut LauberhornCompletion) };
+
+    if res {
+        Some(await_result)
+    } else {
+        None
+    }
+}
+
 impl Lauberhorn {
+
     /// Initialize the lauberhorn RPC subsystem.
     pub fn init() -> DandelionResult<Self> {
         let mut ctx = LauberhornCtx::new();
         match unsafe { lauberhorn_init(&mut ctx) } {
             0 => Ok(Lauberhorn { ctx, workers: Vec::new() }),
-            // just some generic error code for now --> specialize and refine
+            // TODO(@Sven): create lauberhorn error separtely
             _ => Err(DandelionError::LauberhornError("lauberhorn_init".into())),
         }
     }
 
     /// Register a new RPC service backed by a dandelion function.
+    /// 
     pub fn register_service<E: Engine>(
         &self,
         service_ctx: Box<LauberhornServiceCtx<E>>,
+        handler: LauberhornHandler,
         prog_num: u32,
         prog_ver: u32,
         proc_num: u32,
         listen_port: u16,
+        is_nested: bool,
+        rpc_codec: &RpcCodec
     ) -> DandelionResult<i32> {
-        debug!(
-            "LAUBERHORN_SCHEMA at {:p}: call_size={}, call_func={:p}, resp_func={:p}",
-            &LAUBERHORN_SCHEMA as *const _,
-            LAUBERHORN_SCHEMA.call_size,
-            LAUBERHORN_SCHEMA.call_func as *const (),
-            LAUBERHORN_SCHEMA.resp_func as *const ()
-        );
-
-        // Todo(@Sven): make func, data, schema input available to runtime ? 
+        
         let id = unsafe {
             lauberhorn_reg_srv(
                 &self.ctx,
-                lauberhorn_function_handler::<E>,
+                handler,
                 Box::into_raw(service_ctx) as *mut c_void,
                 prog_num,
                 prog_ver,
                 proc_num,
                 listen_port,
-                &LAUBERHORN_SCHEMA,
+                is_nested, 
+                rpc_codec
             )
         };
         if id < 0 {
+            // TODO(@Sven): implement own error category
             Err(DandelionError::LauberhornError("lauberhorn_reg_srv".into()))
         } else {
             Ok(id)

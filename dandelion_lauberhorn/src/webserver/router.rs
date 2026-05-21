@@ -27,7 +27,7 @@ pub async fn route<E: Engine>(
             handlers::register_composition(req, &runtime).await
         }
         // think of better endpoint name
-        "/register/service" => handlers::register_service(req, &runtime).await,
+        // "/register/service" => handlers::register_service(req, &runtime).await,
         "/stats" => handlers::serve_stats(req).await,
         _ => Ok(webutils::make_bad_request("Unknown endpoint")),
     };

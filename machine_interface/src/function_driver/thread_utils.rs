@@ -130,7 +130,6 @@ fn run_thread<E: Engine>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
 
                 recorder.record(RecordPoint::EngineEnd);
                 drop(recorder);
-                
 
                 // SVEN: wrap resulting Context into WorkDone Wrapper
                 let results = result.and_then(|context| Ok(WorkDone::Context(context)));

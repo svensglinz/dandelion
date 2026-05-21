@@ -125,7 +125,10 @@ fn mmu_run_static(
         .spawn()
         .map_err(|e| {
             // currently fails with no such file or directory (for path above...)
-            eprintln!("Failed to spawn mmu worker process with path '{}', error: {}", &path, e);
+            eprintln!(
+                "Failed to spawn mmu worker process with path '{}', error: {}",
+                &path, e
+            );
             DandelionError::MmuWorkerError
         })?;
 

@@ -1,4 +1,5 @@
 use crate::lauberhorn::lauberhorn::Lauberhorn;
+use crate::lauberhorn::lauberhorn::RPC_CODEC;
 use crate::lauberhorn::types::LauberhornServiceCtx;
 use dandelion_commons::DandelionError;
 use dandelion_commons::DandelionResult;
@@ -13,6 +14,7 @@ use machine_interface::machine_config::{
 use machine_interface::memory_domain::{MemoryDomain, MemoryResource};
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use crate::lauberhorn::lauberhorn::LauberhornHandler;
 
 pub struct Runtime<E: Engine> {
     registry: Arc<FunctionRegistry>,
@@ -20,9 +22,6 @@ pub struct Runtime<E: Engine> {
     engines: Vec<Box<E>>,
     domains: Vec<Arc<Box<dyn MemoryDomain>>>,
 }
-
-/// No-op callback matching `noop_cb` in the C header.
-pub unsafe extern "C" fn noop_cb(_worker_idx: i32) {}
 
 // SAFETY: Runtime is shared via Arc and accessed through &self methods only.
 // The raw pointers inside Lauberhorn are C FFI handles with a managed lifecycle
@@ -78,8 +77,16 @@ impl<E: Engine> Runtime<E> {
             id: 0
         });
 
+        // TODO(@sven): use user configured values via config.rs in server crate
         lauberhorn.register_service(
-            srv_context, 1, 1, 1, 11111
+            srv_context, 
+            LauberhornHandler {
+             func: crate::lauberhorn::lauberhorn::dandelion_function_handler::<E>,
+             free: crate::lauberhorn::lauberhorn::dandelion_function_free,   
+            },
+            1, 1, 1,
+            11111, false,
+            &RPC_CODEC
         )?;
         Ok(Runtime { registry, lauberhorn, engines, domains })
     }
@@ -88,49 +95,53 @@ impl<E: Engine> Runtime<E> {
     ///
     /// The function identified by `function_id` must already be registered
     /// via [`register_function`](Self::register_function).
-    pub fn register_service(
-        &self,
-        function_id: FunctionId,
-        prog_num: u32,
-        prog_ver: u32,
-        proc_num: u32,
-        listen_port: u16,
-    ) -> Result<(), ()> {
-
-        // get prog_num, prog_ver, proc_num, listen_port from config
-        // this is the 4 tuple under which we register ALL services
-        // and all it does is invoke the dispatch_function shim
-
-        debug!("Registering service for function '{}' with prog_num {}, prog_ver {}, proc_num {}, listen_port {}",
-            function_id, prog_num, prog_ver, proc_num, listen_port);
-
-        // INFO AFTER REFACTOR: just store registration in a map to verify on calls if this funciton is actually registered
-        // create context for this service
-        // lauberhorn needs this to access runtime data structures when executing requests for this service
-        let srv_ctx = Box::new(LauberhornServiceCtx {
-            function_registry: self.registry.clone(),
-            // currently pass all engines as vector -> index into this by core_id this thing runs on
-            // probably need more reliable mapping core -> vector slot
-            engines: self
-                .engines
-                .iter()
-                .map(|e| &**e as *const E as *mut E)
-                .collect(),
-            id: 0,
-        });
-
-        self.lauberhorn
-            .register_service(
-                srv_ctx,
-                prog_num,
-                prog_ver,
-                proc_num,
-                listen_port,
-            )
-            .map(|_| ())
-            .map_err(|_| ())
-        // TODO: return DandelionResult
-    }
+    //pub fn register_service(
+    //    &self,
+    //    function_id: FunctionId,
+    //    prog_num: u32,
+    //    prog_ver: u32,
+    //    proc_num: u32,
+    //    listen_port: u16,
+    //) -> Result<(), ()> {
+//
+    //    // get prog_num, prog_ver, proc_num, listen_port from config
+    //    // this is the 4 tuple under which we register ALL services
+    //    // and all it does is invoke the dispatch_function shim
+//
+    //    debug!("Registering service for function '{}' with prog_num {}, prog_ver {}, proc_num {}, listen_port {}",
+    //        function_id, prog_num, prog_ver, proc_num, listen_port);
+//
+    //    // INFO AFTER REFACTOR: just store registration in a map to verify on calls if this funciton is actually registered
+    //    // create context for this service
+    //    // lauberhorn needs this to access runtime data structures when executing requests for this service
+    //    let srv_ctx = Box::new(LauberhornServiceCtx {
+    //        function_registry: self.registry.clone(),
+    //        // currently pass all engines as vector -> index into this by core_id this thing runs on
+    //        // probably need more reliable mapping core -> vector slot
+    //        engines: self
+    //            .engines
+    //            .iter()
+    //            .map(|e| &**e as *const E as *mut E)
+    //            .collect(),
+    //        id: 0,
+    //    });
+//
+    //    self.lauberhorn
+    //        .register_service(
+    //            srv_ctx,
+    //            LauberhornHandler {
+    //                func: 
+    //            },
+    //            prog_num,
+    //            prog_ver,
+    //            proc_num,
+    //            listen_port,
+    //            false
+    //        )
+    //        .map(|_| ())
+    //        .map_err(|_| ())
+    //    // TODO: return DandelionResult
+    //}
 
     /// Register a composition with the runtime's function registry.
     pub fn register_composition(
@@ -186,7 +197,7 @@ impl<E: Engine> Runtime<E> {
         );
 
         for _ in &self.engines {
-            self.lauberhorn.create_worker(Some(noop_cb), Some(noop_cb));
+            self.lauberhorn.create_worker(None, None);
         }
         Ok(())
     }
