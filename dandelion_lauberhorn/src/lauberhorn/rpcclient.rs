@@ -1,6 +1,8 @@
 use byteorder::BigEndian;
-use byteorder::{WriteBytesExt, ReadBytesExt};
+use byteorder::{WriteBytesExt};
 
+
+/// TODO(@Sven): if still needed, move to utils/oncrpc.rs
 pub struct OncRpcHeader {
     pub xid: u32,
     pub msg_type: u32,

@@ -2,7 +2,6 @@ use bytes::Bytes;
 use dandelion_commons::{DandelionError, DandelionResult};
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use super::utils as webutils;
 use crate::runtime::Runtime;

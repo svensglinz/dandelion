@@ -30,5 +30,5 @@ pub fn xdr_write_opaque(src: &[u8], dst: *mut u8, dst_len: usize) -> Result<usiz
         // write data
         std::ptr::copy_nonoverlapping(src.as_ptr(), dst.add(4), src.len());
     };
-    Some(total)
+    Ok(total)
 }

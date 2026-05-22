@@ -50,7 +50,7 @@ pub fn invoke_service(
     ip_addr: &str,
     listen_port: u16,
     data: DandelionArgs,
-) -> Result<DandelionDeserializeResponse, String> {
+) -> Result<DandelionDeserializeResponse, ()> {
     // create XDR stream for body
     let mut buffer = vec![0u8; 1500];
 
@@ -70,7 +70,7 @@ pub fn invoke_service(
     };
     
     if bytes_written == 0 {
-        return Err("marshal_call failed to write data".to_string());
+        return Err(())
     }
     
     
@@ -80,18 +80,16 @@ pub fn invoke_service(
 
     let sock = UdpSocket::bind("10.0.0.5:0").map_err(|e| {
         let msg = format!("Failed to bind UDP socket: {}", e);
-        eprintln!("{}", msg);
-        msg
+        ()
     })?;
     
     let local_addr = sock.local_addr().map_err(|e| {
-        msg
+        ()
     })?;
 
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
     let listener_sock = sock.try_clone().map_err(|e| {
-        eprintln!("{}", msg);
-        msg
+        ()
     })?;
     std::thread::spawn(move || {
         let mut buf = vec![0u8; 4096];
@@ -108,12 +106,12 @@ pub fn invoke_service(
 
     sock.send_to(&rpc_msg.to_network_bytes(), format!("{}:{}", ip_addr, listen_port))
         .map_err(|e| {
-            msg
+            ()
         })?;
     
 
     let response = rx.recv_timeout(Duration::from_secs(2)).map_err(|e| {
-        msg
+        ()
     })?;
 
     if let Some(oncrpc::OncRpcMsg::Reply(response_msg)) = oncrpc::OncRpcMsg::from_network_bytes(&response) {
@@ -126,13 +124,11 @@ pub fn invoke_service(
             );
         }
         if reply_buffer.is_null() {
-            let msg = "FFI dandelion_unmarshal_resp returned null pointer".to_string();
-            eprintln!("{}", msg);
-            return Err(msg);
+            return Err(());
         }
         let reply = unsafe { Box::from_raw(reply_buffer as *mut DandelionDeserializeResponse) };
         Ok(*reply)
     } else {
-        Err(msg)
+        Err(())
     }
 }
