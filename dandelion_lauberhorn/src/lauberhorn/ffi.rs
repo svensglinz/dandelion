@@ -1,11 +1,9 @@
 use std::ffi::{c_char, c_void};
 use std::sync::Arc;
-use crate::execution::{comp_set_to_input_set, dandelion_handler};
+use crate::dispatcher::execution::dandelion_handler;
 use crate::lauberhorn::marshal::{DandelionRPCRequest, DandelionRPCResponse};
 use crate::runtime::RuntimeContext;
 use crate::webserver::schemas::InputSet;
-use dandelion_commons::records::Recorder;
-use dandelion_server::DandelionBody;
 use machine_interface::function_driver::thread_utils::Engine;
 
 // ---------------------------------------------------------------------------
@@ -166,15 +164,9 @@ pub extern "C" fn dandelion_function_handler<E: Engine>(
     let rpc_req = unsafe { &mut *(req as *mut DandelionRPCRequest) };
 
     // returns NULL on error, else pointer to result context
-    let result = dandelion_handler::<E>(ctx, rpc_req).unwrap();
+    let sets = dandelion_handler::<E>(ctx, rpc_req).unwrap();
     // for now handle it here
 
-    let sets: Vec<InputSet> = result
-        .into_iter()
-        .flatten()
-        .map(|comp_set| comp_set_to_input_set(&comp_set))
-        .collect();
-    
     let response = DandelionRPCResponse {
         sets: sets
     };  

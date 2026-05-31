@@ -92,7 +92,7 @@ pub fn invoke_service(
                 buf.truncate(size);
                 let _ = tx.send(buf);
             }
-            Err(e) => {
+            Err(_) => {
             }
         }
     });

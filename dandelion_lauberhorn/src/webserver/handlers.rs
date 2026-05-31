@@ -5,9 +5,7 @@ use std::path::PathBuf;
 
 use super::utils as webutils;
 use crate::runtime::Runtime;
-use crate::webserver::schemas::{
-    RegisterChain, RegisterFunction, RegisterService,
-};
+use crate::webserver::schemas::{RegisterChain, RegisterFunction};
 use dandelion_server::DandelionBody;
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
