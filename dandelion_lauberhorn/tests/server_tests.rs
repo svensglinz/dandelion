@@ -65,7 +65,7 @@ fn register_matmul_x86() {
 fn invoke_service_test() {
     let mut data = Vec::new();
     data.extend_from_slice(&i64::to_le_bytes(1));
-    data.extend_from_slice(&i64::to_le_bytes(1));
+        data.extend_from_slice(&i64::to_le_bytes(2));
 
     let mat_request = vec![InputSet {
             identifier: String::from(""),
@@ -101,7 +101,7 @@ fn invoke_malmul_chain_test() {
     // input data
     let mut data = Vec::new();
     data.extend_from_slice(&i64::to_le_bytes(1));
-    data.extend_from_slice(&i64::to_le_bytes(1));
+    data.extend_from_slice(&i64::to_le_bytes(2));
 
     let mat_data = vec![InputSet {
         identifier: String::from(""),

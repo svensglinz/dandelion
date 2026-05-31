@@ -26,10 +26,12 @@ pub fn execute_composition<E: Engine>(
     let inputs = input_sets_to_comp_sets(&request.data.sets);
 
     // initialize output sets
-    let mut output_sets: Vec<Option<CompositionSet>> =
-        vec![None; composition.output_map.len()];
+    // let mut output_sets: Vec<Option<CompositionSet>> =
+    //     vec![None; composition.output_map.len()];
+    let num_slots = composition.output_map.keys().max().copied().unwrap_or(0) + 1;
+    let mut output_sets = vec![None; num_slots];
 
-    // check if some of the inputs are outputs
+    //  check if some of the inputs are outputs
     for (input_index, input_set) in inputs.iter().enumerate() {
         if let Some(&out_index) = composition.output_map.get(&input_index) {
             output_sets[out_index] = input_set.clone();
@@ -59,5 +61,15 @@ pub fn execute_composition<E: Engine>(
     dispatcher.run();
 
     // TODO(@Sven): check if result is complete or if we aborted early
-    Ok(dispatcher.output_sets)
+    // TODO(@Sven): include this as dispatcher.get_result() or similar ? 
+    let mut final_output: Vec<(usize, Option<CompositionSet>)> = dispatcher.output_sets
+        .into_iter()
+        .enumerate()
+        .filter(|(slot_idx, _)| composition.output_map.contains_key(slot_idx))
+        .collect();
+
+    final_output.sort_by_key(|(slot_idx, _)| composition.output_map[slot_idx]);    
+
+    Ok(final_output.into_iter().map(|(_, set)| set).collect())
+
 }
