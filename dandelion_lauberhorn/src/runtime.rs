@@ -38,20 +38,11 @@ static DANDELION_RPC_SERVER_CODEC: LazyLock<Arc<RpcCodec>> = LazyLock::new(|| {
     })
 });
 
-static DANDELION_RPC_CLIENT_CODEC: LazyLock<Arc<RpcCodec>> = LazyLock::new(|| {
-    Arc::new(RpcCodec {
-        // for_server, for_client ? 
-        ops: &DANDELION_RPC_OPS_CLIENT,
-        private: std::ptr::null(),
-    })
-});
-
-
 static DANDELION_NESTED_EP: LazyLock<Arc<LauberhornRpcEndpoint<DandelionRPCRequest, DandelionRPCResponse>>> = 
     LazyLock::new(|| {
         Arc::new(LauberhornRpcEndpoint::new(
             "10.0.0.5", 
-            1, 
+            12345, 
             1, 
             1, 
             1,
@@ -137,7 +128,7 @@ impl<E: Engine> Runtime<E> {
              free: dandelion_function_free,   
             },
             1, 1, 1,
-            11111, false,
+            12345, true, // TODO(@Sven): if we only want one endpoint, must be true, else must have nested and non-nested endpoint
             (*&DANDELION_RPC_SERVER_CODEC).clone()
         )?;
         Ok(Runtime { 
@@ -205,6 +196,7 @@ impl<E: Engine> Runtime<E> {
         &self,
         composition_desc: &str,
     ) -> DandelionResult<()> {
+        debug!("Registering composition {}", composition_desc);
         self.ctx.registry.insert_compositions(composition_desc)
     }
 

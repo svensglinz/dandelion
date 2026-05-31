@@ -1,10 +1,10 @@
-use dandelion_lauberhorn::{
-    webserver::schemas::{DandelionDeserializeResponse, InputItem, InputSet},
-};
+use dandelion_lauberhorn::webserver::schemas::{DandelionDeserializeResponse, InputItem, InputSet, RegisterChain};
 use std::vec;
 mod common;
 use common::{invoke_service, register_function};
 use dandelion_lauberhorn::webserver::schemas::RegisterFunction;
+
+use crate::common::register_composition;
 
 const MATMUL_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -12,7 +12,37 @@ const MATMUL_PATH: &str = concat!(
 );
 
 #[test]
+fn register_matmul_composition() {
+
+    let function_name = "matmul_x86";
+    let version_string = "matmul_x86";
+
+    let chain_name = format!("chain_{}", version_string);
+    let chain_request = RegisterChain {
+        composition: format!(
+            r#"
+            function {function} (InMats) => (OutMats);
+            composition {chain} (CompInMats) => (CompOutMats) {{
+                {function} (InMats = all CompInMats) => (InterMat = OutMats);
+                {function} (InMats = all InterMat) => (CompOutMats = OutMats);
+            }}
+        "#,
+            function = function_name,
+            chain = chain_name,
+        ),
+    };
+
+    let res = register_composition("http://localhost:6000/register/composition", &chain_request)
+        .expect("Failed to register composition");
+    
+    println!("{:?}", res);
+}
+
+
+
+#[test]
 fn register_matmul_x86() {
+
     let req = RegisterFunction {
         name: "matmul_x86".to_string(),
         context_size: 0x802_0000,
@@ -48,7 +78,7 @@ fn invoke_service_test() {
 
     // Todo(@Sven): pass timeout as parameter
     let res =
-        invoke_service("matmul_x86", 1, 1, 1, "10.0.0.5", 11111, mat_request)
+        invoke_service("matmul_x86", 1, 1, 1, "10.0.0.5", 12345, mat_request)
             .expect("Failed to invoke service");
 
     let res_exp = DandelionDeserializeResponse {
@@ -63,4 +93,29 @@ fn invoke_service_test() {
     };
     println!("Expected response: {:?}", res_exp);
     println!("Actual response: {:?}", res);
+}
+
+#[test]
+fn invoke_malmul_chain_test() {
+
+    // input data
+    let mut data = Vec::new();
+    data.extend_from_slice(&i64::to_le_bytes(1));
+    data.extend_from_slice(&i64::to_le_bytes(1));
+
+    let mat_data = vec![InputSet {
+        identifier: String::from(""),
+        items: vec![InputItem {
+            identifier: String::from(""),
+            key: 0,
+            data: data,
+        }],
+    }];
+
+    let res = 
+        invoke_service("chain_matmul_x86", 1, 1, 1, "10.0.0.5", 12345, mat_data)
+        .expect("Failed to invoke composition");
+
+    println!("Actual response: {:?}", res);
+
 }

@@ -1,4 +1,5 @@
 use std::ffi::{c_char, c_void};
+use std::sync::Arc;
 use crate::execution::{comp_set_to_input_set, dandelion_handler};
 use crate::lauberhorn::marshal::{DandelionRPCRequest, DandelionRPCResponse};
 use crate::runtime::RuntimeContext;
@@ -125,7 +126,7 @@ pub struct LauberhornRpcEndpointRaw {
     pub(crate) prog_num: u32,
     pub(crate) prog_ver: u32,
     pub(crate) proc_num: u32,
-    pub(crate) codec: RpcCodec,
+    pub(crate) codec: *mut RpcCodec,
 }
 
 /// Opaque context handle returned by `lauberhorn_init`.
@@ -157,7 +158,11 @@ pub extern "C" fn dandelion_function_handler<E: Engine>(
     req: *mut c_void,  // *mut DandelionRPCRequest
     xid: u32,
 ) -> *mut c_void {
-    let ctx = unsafe {&mut  *(data as *mut RuntimeContext<E>) };
+    let ctx = unsafe {
+        Arc::increment_strong_count(data as *const RuntimeContext<E>);
+        Arc::from_raw(data as *const RuntimeContext<E>)    
+    };
+
     let rpc_req = unsafe { &mut *(req as *mut DandelionRPCRequest) };
 
     // returns NULL on error, else pointer to result context

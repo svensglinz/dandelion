@@ -90,7 +90,7 @@ pub struct DandelionDeserializeResponse {
     pub timestamps: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct RegisterChain {
     pub composition: String,
 }

@@ -7,7 +7,7 @@ use dandelion_commons::records::Recorder;
 use dandelion_commons::FunctionId;
 use dandelion_server::DandelionBody;
 use dispatcher::dispatcher::DispatcherInput;
-use dispatcher::function_registry::{FunctionInfo, FunctionType};
+use dispatcher::function_registry::{CompositionInfo, FunctionInfo, FunctionType};
 use log::{debug, error};
 use machine_interface::composition::{
     Composition, CompositionSet, FunctionDependencies, InputSetDescriptor, JoinIterator, JoinStrategy, ShardingMode
@@ -23,10 +23,6 @@ use machine_interface::{DataItem, DataSet};
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
-
-// type of pointer lauberhorn returns
-type LauberhornExecResult = *mut DandelionBody;
-
 
 pub fn comp_set_to_input_set(comp_set: &CompositionSet) -> InputSet {
     let mut items = Vec::new();
@@ -100,7 +96,7 @@ fn parse_req_ctx_from_input_sets(input: &Vec<InputSet>) -> Result<Context, ()> {
 ///
 ///
 pub fn dandelion_handler<E: Engine>(
-    ctx: &mut RuntimeContext<E>,
+    ctx: Arc<RuntimeContext<E>>,
     request: &mut DandelionRPCRequest,
 ) -> Result<Vec<Option<CompositionSet>>, ()> {
    
@@ -125,12 +121,12 @@ pub fn dandelion_handler<E: Engine>(
 
     let result: Result<Vec<Option<CompositionSet>>, ()> = match func {
         FunctionType::Function(ref func_info) => {
+            log::debug!("executing function");
             execute_function(ctx, func_info, request)
         }
-        FunctionType::Composition(_comp_info) => {
-            // execute_composition(...);
-            // composition here gets access to the global results table !
-            todo!("Composition execution not implemented yet")
+        FunctionType::Composition(comp_info) => {
+            log::debug!("executing composition");
+            execute_composition(ctx, comp_info, request, false)
         }
         FunctionType::SystemFunction(ref _func_info) => {
             todo!("System function execution not implemented yet")
@@ -333,24 +329,38 @@ impl<E: Engine> Dispatcher<E> { // TODO(@Sven): can we remove the type param som
     // 5.  Repeat
     fn run(&mut self) {
 
+        eprintln!("[dispatcher::run] start shard_queue={} in_flight={}", 
+        self.shard_queue.len(), self.in_flight.len());
+
         // drain queue and execute RPC requests until
         // 1. shard queue is empty
         // 2. no more in flight requests
         while !self.in_flight.is_empty() || !self.shard_queue.is_empty() {
+
+            eprintln!("[dispatcher::run] loop shard_queue={} in_flight={}", 
+            self.shard_queue.len(), self.in_flight.len());
+
             self.try_drain_queue();
+
+             eprintln!("[dispatcher::run] after drain shard_queue={} in_flight={}", 
+            self.shard_queue.len(), self.in_flight.len());
+
 
             // await a result
             match self.await_set.await_any() {
-                None => continue,
+                None => {
+                    eprintln!("[dispatcher::run] await_any returned None");
+                    continue;
+                }
                 // provide result
                 Some(ref mut handle) => {
-                    
+                    eprintln!("[dispatcher::run] got result handle.id={}", handle.id);
                     // extract response
                     let r = handle.take_data().unwrap();
                     let (task_id, shard_idx) = self.in_flight
                         .remove(&(handle.id as i32))
                         .unwrap();
-
+                    eprintln!("[dispatcher::run] result for task_id={} shard_idx={} sets={}", task_id, shard_idx, r.sets.len());
                     // transform deserialized result (Vec<InputSet> to Vec<Option<CompositionSet>>
                     let result = input_sets_to_comp_sets(&r.sets);
 
@@ -368,6 +378,7 @@ impl<E: Engine> Dispatcher<E> { // TODO(@Sven): can we remove the type param som
                 }
             }
         }
+        eprintln!("[dispatcher::run] done output_sets={}", self.output_sets.len());
     }
 
     fn try_drain_queue(&mut self) {
@@ -375,7 +386,7 @@ impl<E: Engine> Dispatcher<E> { // TODO(@Sven): can we remove the type param som
             
             // TODO(@Sven): make element in shard queue a struct, that has a referrnce to the task in the task  map!
             let task = self.tasks.get(task_id).unwrap();
-
+            eprintln!("[dispatcher::drain] dispatching task_id={} shard_idx={} function={}", task_id, shard_idx, task.function_id);
             // maybe also need a nested request format (ie. idx as well ...) and then store this in a separate slot too
             let request = DandelionRPCRequest {
                 function_name: task.function_id.to_string(),
@@ -387,11 +398,18 @@ impl<E: Engine> Dispatcher<E> { // TODO(@Sven): can we remove the type param som
             // need to build a RpcRequest here with name & all to be supplied to the endpoint ...
             match call_async(&*self.ctx.nested_ep, &request) {
                 Ok(handle) => {
+                    eprintln!("[dispatcher::drain] dispatched handle.id={}", handle.id);  
+
+                    // TODO(@Sven): in-flight, await-set could be combined ?                   
                     self.in_flight.insert(handle.id as i32, (*task_id, *shard_idx));
+                    self.await_set.add(handle);
                     self.shard_queue.pop_front();
                 }
                 // no more detailed errors so far, but likely out of table slots
-                Err(()) => break,
+                Err(()) => {
+                    eprintln!("[dispatcher::drain] call_async failed — table full?");
+                    break
+                }
             }
         }
     }
@@ -403,6 +421,8 @@ impl<E: Engine> Dispatcher<E> { // TODO(@Sven): can we remove the type param som
         shard_idx: usize,
         result: Vec<Option<CompositionSet>>,
     ) {
+        eprintln!("[dispatcher::insert_result] task_id={} shard_idx={} result_sets={}", task_id, shard_idx, result.len());
+
         // add the result to the shard results for the task
         self.shard_results.get_mut(&task_id).unwrap()[shard_idx] = result;
 
@@ -410,6 +430,7 @@ impl<E: Engine> Dispatcher<E> { // TODO(@Sven): can we remove the type param som
         let pending = self.pending_shards.get_mut(&task_id).unwrap();
         *pending -= 1; // or maybe better by indices
 
+        eprintln!("[dispatcher::insert_result] pending shards remaining={}", pending);
         if *pending > 0 {
             return;
         }
@@ -418,7 +439,10 @@ impl<E: Engine> Dispatcher<E> { // TODO(@Sven): can we remove the type param som
         let results = self.shard_results.remove(&task_id).unwrap();
         self.pending_shards.remove(&task_id);
         let task = &self.tasks[&task_id];
+
+        eprintln!("[dispatcher::insert_result] all shards done, reducing task_id={}", task_id);
         let reduced = reduce_shards(results, &task.output_set_ids);
+        eprintln!("[dispatcher::insert_result] reduced into {} outputs", reduced.len());
 
         for (comp_set_idx, set) in reduced {
             self.provide_to_waiting(comp_set_idx, set); // makes other tasks ready
@@ -432,6 +456,9 @@ impl<E: Engine> Dispatcher<E> { // TODO(@Sven): can we remove the type param som
         comp_set_idx: usize,
         result: Option<CompositionSet>,
     ) {
+        eprintln!("[dispatcher::provide_to_waiting] comp_set_idx={} waiting_tasks={}",comp_set_idx, 
+        self.waiting_tasks.get(&comp_set_idx).map_or(0, |v| v.len()));
+
         if comp_set_idx < self.output_sets.len() {
             self.output_sets[comp_set_idx] = result.clone();
         }
@@ -448,7 +475,10 @@ impl<E: Engine> Dispatcher<E> { // TODO(@Sven): can we remove the type param som
                 .unwrap()
                 .provide_input(comp_set_idx, result.clone());
 
+            eprintln!("[dispatcher::provide_to_waiting] task_id={} became_ready={}", task_id, became_ready);
+
             if became_ready && self.tasks[&task_id].is_executable() {
+                eprintln!("[dispatcher::provide_to_waiting] enqueuing task_id={}", task_id);
                 self.enqueue_task(task_id);
             }
         }
@@ -647,10 +677,15 @@ fn reduce_shards(
 
 pub fn execute_composition<E: Engine>(
     ctx: Arc<RuntimeContext<E>>,
-    composition: Composition,
-    inputs: Vec<Option<CompositionSet>>,
+    comp_info: CompositionInfo,
+    request: &mut DandelionRPCRequest,
+    // inputs: Vec<Option<CompositionSet>>,
     caching: bool,
 ) -> Result<Vec<Option<CompositionSet>>, ()> {
+
+    let composition = comp_info.composition; 
+    let inputs = input_sets_to_comp_sets(&request.data.sets); 
+
     // initialize output sets
     let mut output_sets: Vec<Option<CompositionSet>> =
         vec![None; composition.output_map.len()];
@@ -688,7 +723,7 @@ pub fn execute_composition<E: Engine>(
 /// Execute a function on the given engine using the provided request context.
 /// // what shoudl we get back here ?
 pub fn execute_function<E: Engine>(
-    ctx: &RuntimeContext<E>,
+    ctx: Arc<RuntimeContext<E>>,
     func_info: &FunctionInfo,
     request: &mut DandelionRPCRequest, // will be assembled HERE
 ) -> Result<Vec<Option<CompositionSet>>, ()> {

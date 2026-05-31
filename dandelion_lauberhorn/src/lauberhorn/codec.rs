@@ -57,32 +57,35 @@ impl<Req: RpcEncode, Resp: RpcDecode> LauberhornRpcEndpoint<Req, Resp> {
         let daddr_ptr = CString::new(daddr).unwrap().into_raw();
         // TODO(@Sven): fix directions (out, in swapped)       
 
+        // TODO(@Sven): memory leak ?
+        let codec = Box::into_raw(Box::new(RpcCodec {
+            ops, 
+            private: std::ptr::null()
+        }));
+
         let inner = LauberhornRpcEndpointRaw {
             daddr: daddr_ptr,
             dport,
             prog_num,
             prog_ver,
             proc_num,
-            codec: RpcCodec {
-                ops,
-                private: std::ptr::null(),
-            },
+            codec: codec
         };
         LauberhornRpcEndpoint { inner, _marker: std::marker::PhantomData, }
     }
 }
 
-impl<Req: RpcEncode, Resp: RpcDecode> Drop for LauberhornRpcEndpoint<Req, Resp> {
-    fn drop(&mut self) {
-        unsafe {
-            if !self.inner.codec.ops.is_null() {
-                drop(Box::from_raw(self.inner.codec.ops as *mut RpcOps));
-            }
-            if !self.inner.daddr.is_null() {
-                drop(CString::from_raw(self.inner.daddr as *mut c_char));
-            }
-        }
-    }
-}
+// impl<Req: RpcEncode, Resp: RpcDecode> Drop for LauberhornRpcEndpoint<Req, Resp> {
+//     fn drop(&mut self) {
+//         unsafe {
+//             if !self.inner.codec.ops.is_null() {
+//                 drop(Box::from_raw(self.inner.codec.ops as *mut RpcOps));
+//             }
+//             if !self.inner.daddr.is_null() {
+//                 drop(CString::from_raw(self.inner.daddr as *mut c_char));
+//             }
+//         }
+//     }
+// }
 
 

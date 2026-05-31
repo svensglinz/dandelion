@@ -30,7 +30,7 @@ impl<T: RpcDecode> AwaitSet<T> {
     }
 
     pub fn size(&self) -> u32 {
-        self.inner.pending.count_ones()
+        self.handles.len() as u32
     }
 
     pub fn is_empty(&self) -> bool {
@@ -50,7 +50,7 @@ impl<T: RpcDecode> AwaitSet<T> {
         if !res { return None; }
 
         let mut handle = self.handles.remove(&(completion.idx as usize))?;
-        self.inner.pending &= !(1 << handle.id);
+        // self.inner.pending &= !(1 << handle.id); (this should be done by C runtime already no ? 
 
         handle.data = Some(Box::new(unsafe {
             std::ptr::read(completion.data as *const T)
@@ -103,10 +103,10 @@ pub fn call_async<Req: RpcEncode, Resp: RpcDecode>(
             std::mem::size_of::<Req>(),
         )
     };
-
-    if res > 0 {
-        Ok(AsyncCallHandle::new(res as usize))
-    } else {
+    // 0 - 63 = okay results (idx into bitmap
+    if res < 0 {
         Err(())
+    } else {
+        Ok(AsyncCallHandle::new(res as usize))
     }
 }
