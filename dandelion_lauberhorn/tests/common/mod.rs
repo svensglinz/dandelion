@@ -1,20 +1,11 @@
-use std::ffi::CStr;
-use std::ffi::CString;
-use std::ffi::c_void;
 use std::net::UdpSocket;
 use std::sync::mpsc;
 use std::time::Duration;
-use dandelion_lauberhorn::lauberhorn::marshal::dandelion_marshal_call;
-use dandelion_lauberhorn::lauberhorn::marshal::dandelion_unmarshal_resp;
-use dandelion_lauberhorn::lauberhorn::types::DandelionArgs;
-use dandelion_lauberhorn::lauberhorn::types::DandelionRPCRequest;
-use dandelion_lauberhorn::utils::xdr::xdr_write_opaque;
-use dandelion_lauberhorn::webserver::schemas::DandelionDeserializeResponse;
-use log::{debug};
+use dandelion_lauberhorn::lauberhorn::marshal::{DandelionRPCResponse, InputSets, RpcDecode, RpcEncode};
+use dandelion_lauberhorn::lauberhorn::{marshal::DandelionRPCRequest};
 use reqwest::blocking::{Client, Response};
-use dandelion_lauberhorn::webserver::schemas::{RegisterFunction, RegisterService};
+use dandelion_lauberhorn::webserver::schemas::{InputSet, RegisterFunction, RegisterService};
 use bson::ser::to_vec;
-use dandelion_lauberhorn::utils::xdr;
 use dandelion_lauberhorn::utils::oncrpc;
 
 
@@ -49,38 +40,28 @@ pub fn invoke_service(
     proc_num: u32,
     ip_addr: &str,
     listen_port: u16,
-    data: DandelionArgs,
-) -> Result<DandelionDeserializeResponse, ()> {
+    data: Vec<InputSet>,
+) -> Result<DandelionRPCResponse, ()> {
     // create XDR stream for body
     let mut buffer = vec![0u8; 1500];
 
     let request = DandelionRPCRequest {
         function_name: function_id.into(),
-        payload: data
+        data: InputSets {
+            sets: data
+        }
     };
 
     // Marshal the request and get number of bytes written
-    let bytes_written = unsafe {
-        dandelion_marshal_call(
-            &request as *const DandelionRPCRequest as *const c_void, 
-            buffer.as_mut_ptr() as *mut c_void,
-            buffer.len(), 
-            0 as *const c_void
-        )
-    };
-    
-    if bytes_written == 0 {
-        return Err(())
-    }
-    
-    
-    // Use ONLY the marshalled bytes, not the entire buffer1
+    let bytes_written = request.rpc_encode(buffer.as_mut_slice())
+        .map_err(|e| { eprintln!("rpc_encode failed: {:?}", e); })?;
+
+    // Use ONLY the marshalled bytes, not the entire buffer
     let mut rpc_msg = oncrpc::OncRpcCall::new(&buffer[..bytes_written as usize]);
     rpc_msg.set_identifier(prog_num, prog_ver, proc_num);
 
     let sock = UdpSocket::bind("10.0.0.5:0").map_err(|e| {
-        let msg = format!("Failed to bind UDP socket: {}", e);
-        ()
+        eprintln!("bind failed: {}", e); ()
     })?;
     
     let local_addr = sock.local_addr().map_err(|e| {
@@ -111,23 +92,16 @@ pub fn invoke_service(
     
 
     let response = rx.recv_timeout(Duration::from_secs(2)).map_err(|e| {
-        ()
+        eprintln!("recv_timeout: {}", e); ()
     })?;
 
     if let Some(oncrpc::OncRpcMsg::Reply(response_msg)) = oncrpc::OncRpcMsg::from_network_bytes(&response) {
         let payload = response_msg.get_payload();
-        let mut reply_buffer: *mut c_void = std::ptr::null_mut();
-        unsafe {
-            dandelion_unmarshal_resp(
-                payload.as_ptr() as *const c_void, &mut reply_buffer,
-                payload.len(), 0 as *const c_void
-            );
-        }
-        if reply_buffer.is_null() {
-            return Err(());
-        }
-        let reply = unsafe { Box::from_raw(reply_buffer as *mut DandelionDeserializeResponse) };
-        Ok(*reply)
+
+        let reply = DandelionRPCResponse::rpc_decode(payload)
+            .unwrap();
+
+        Ok(reply)
     } else {
         Err(())
     }

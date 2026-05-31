@@ -36,6 +36,7 @@ impl<'a, const N: usize, T> Drop for PoolGuard<'a, N, T> {
 
 impl<const N: usize, T> ObjectPool<N, T> {
     pub fn new(elements: Vec<T>) -> Self {
+        println!("N = {}, len = {}", N, elements.len());
         assert!(N > 0 && N <= 64);
         assert!(elements.len() == N, "must provide exactly N elements");
         ObjectPool {
@@ -55,12 +56,12 @@ impl<const N: usize, T> ObjectPool<N, T> {
     // manual variants for cross-message lifetimes
     pub fn claim_manual(&self) -> Option<(usize, &T)> {
         let idx = self.map.reserve_slot()?;
-        unsafe { Some((idx, &(*self.elements.get())[idx])) }
+        unsafe { Some((idx, &(*(*self.elements.get()))[idx])) }
     }
 
     pub fn claim_mut_manual(&self) -> Option<&mut T> {
         let idx = self.map.reserve_slot()?;
-        unsafe { Some(&mut (*self.elements.get())[idx]) }
+        unsafe { Some(&mut (*(*self.elements.get()))[idx]) }
     }
 
     fn index_of_ref(&self, val: &T) -> Option<usize> {
@@ -82,11 +83,11 @@ impl<const N: usize, T> ObjectPool<N, T> {
 
     pub fn get(&self, idx: usize) -> Option<&T> {
         if idx >= N { return None; }
-        unsafe { Some(&(*self.elements.get())[idx]) }
+        unsafe { Some(&(*(*self.elements.get()))[idx]) }
     }
 
     pub fn get_mut(&self, idx: usize) -> Option<&mut T> {
         if idx >= N { return None; }
-        unsafe { Some(&mut (*self.elements.get())[idx]) }
+        unsafe { Some(&mut (*(*self.elements.get()))[idx]) }
     }
 }

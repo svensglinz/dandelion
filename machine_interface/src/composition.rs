@@ -78,9 +78,9 @@ impl JoinStrategy {
 #[derive(Clone, Debug)]
 pub struct CompositionSet {
     /// items identfied by tuple of key, item index and the context reference
-    item_list: Vec<(u32, usize, Arc<Context>)>,
-    /// the set side inside the contexts the composition set represents
-    set_index: usize,
+    pub item_list: Vec<(u32, usize, Arc<Context>)>,
+     /// the set side inside the contexts the composition set represents
+    pub set_index: usize,
 }
 
 impl CompositionSet {
@@ -244,7 +244,7 @@ pub fn get_sharding(
     final_sharding
 }
 
-struct JoinIterator {
+pub struct JoinIterator {
     left: Option<Box<JoinIterator>>,
     right: Vec<CompositionSet>,
     right_index: usize,
@@ -254,7 +254,7 @@ struct JoinIterator {
 }
 
 impl JoinIterator {
-    fn new(
+    pub fn new(
         mode: JoinStrategy,
         mut left_opt: Option<Box<Self>>,
         right_opt: Option<(ShardingMode, CompositionSet)>,
@@ -328,7 +328,7 @@ impl JoinIterator {
         }))
     }
 
-    fn fill_in(&mut self, to_fill: &mut Vec<Option<CompositionSet>>) -> bool {
+    pub fn fill_in(&mut self, to_fill: &mut Vec<Option<CompositionSet>>) -> bool {
         let left_filled = if let Some(left) = &mut self.left {
             left.fill_in(to_fill)
         } else {
@@ -345,7 +345,7 @@ impl JoinIterator {
         left_filled || right_filled
     }
 
-    fn advance(&mut self) -> bool {
+    pub fn advance(&mut self) -> bool {
         let right = &mut self.right;
         if let Some(left) = &mut self.left {
             match self.mode {

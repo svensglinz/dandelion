@@ -6,13 +6,13 @@ use crate::lauberhorn::{
          dandelion_free, dandelion_marshal, dandelion_unmarshal}
 };
 
-pub struct LauberhornRpcEndpoint<In: RpcDecode, Out: RpcEncode> {
+pub struct LauberhornRpcEndpoint<Req: RpcEncode, Resp: RpcDecode> {
     pub(crate) inner: LauberhornRpcEndpointRaw,
-    pub(crate) _marker: PhantomData<(In, Out)>
+    pub(crate) _marker: PhantomData<(Req, Resp)>
 }
 
-unsafe impl<In: RpcDecode, Out: RpcEncode> Sync for LauberhornRpcEndpoint<In, Out>{}
-unsafe impl<In: RpcDecode, Out: RpcEncode> Send for LauberhornRpcEndpoint<In, Out> {}
+unsafe impl<Req: RpcEncode, Resp: RpcDecode> Sync for LauberhornRpcEndpoint<Req, Resp>{}
+unsafe impl<Req: RpcEncode, Resp: RpcDecode> Send for LauberhornRpcEndpoint<Req, Resp> {}
 
 // require this to be passed for servicee reg to (addr should be optional, (bind to 0.0.0.0 !)
 // can have server, client as helpers
@@ -20,19 +20,29 @@ unsafe impl<In: RpcDecode, Out: RpcEncode> Send for LauberhornRpcEndpoint<In, Ou
 
 impl RpcOps {
 
-    pub const fn for_types<Out: RpcEncode, In: RpcDecode>() -> Self {
+    pub const fn for_server<Req: RpcDecode, Resp: RpcEncode>() -> Self {
         RpcOps {
-            marshal_call: dandelion_marshal::<Out> as MarshalProc, 
-            unmarshal_call: dandelion_unmarshal::<In> as UnmarshalProc, 
-            marshal_resp: dandelion_marshal::<Out> as MarshalProc,
-            unmarshal_resp: dandelion_unmarshal::<In> as UnmarshalProc,
-            free: dandelion_free
+            marshal_call:   dandelion_marshal::<Resp>   as MarshalProc,   // unused on server
+            unmarshal_call: dandelion_unmarshal::<Req>  as UnmarshalProc, // decode incoming request
+            marshal_resp:   dandelion_marshal::<Resp>   as MarshalProc,   // encode response
+            unmarshal_resp: dandelion_unmarshal::<Req>  as UnmarshalProc, // unused on server
+            free: dandelion_free,
+        }
+    }
+
+    pub const fn for_client<Req: RpcEncode, Resp: RpcDecode>() -> Self {
+        RpcOps {
+            marshal_call:   dandelion_marshal::<Req>    as MarshalProc,   // encode request
+            unmarshal_call: dandelion_unmarshal::<Resp> as UnmarshalProc, // unused on client
+            marshal_resp:   dandelion_marshal::<Req>    as MarshalProc,   // unused on client
+            unmarshal_resp: dandelion_unmarshal::<Resp> as UnmarshalProc, // decode response
+            free: dandelion_free,
         }
     }
 }
 
 
-impl<In: RpcDecode, Out: RpcEncode> LauberhornRpcEndpoint<In, Out> {
+impl<Req: RpcEncode, Resp: RpcDecode> LauberhornRpcEndpoint<Req, Resp> {
 
     pub fn new(
         daddr: &str,
@@ -40,13 +50,12 @@ impl<In: RpcDecode, Out: RpcEncode> LauberhornRpcEndpoint<In, Out> {
         prog_num: u32,
         prog_ver: u32,
         proc_num: u32,
+        ops: *mut RpcOps,
         // should also pass codec here explicitly
     ) -> Self {
 
         let daddr_ptr = CString::new(daddr).unwrap().into_raw();
-        // TODO(@Sven): fix directions (out, in swapped)
-        let ops = Box::into_raw(Box::new(RpcOps::for_types::<Out, In>())); // should be passed explicitly !
-        
+        // TODO(@Sven): fix directions (out, in swapped)       
 
         let inner = LauberhornRpcEndpointRaw {
             daddr: daddr_ptr,
@@ -63,7 +72,7 @@ impl<In: RpcDecode, Out: RpcEncode> LauberhornRpcEndpoint<In, Out> {
     }
 }
 
-impl<In: RpcDecode, Out: RpcEncode> Drop for LauberhornRpcEndpoint<In, Out> {
+impl<Req: RpcEncode, Resp: RpcDecode> Drop for LauberhornRpcEndpoint<Req, Resp> {
     fn drop(&mut self) {
         unsafe {
             if !self.inner.codec.ops.is_null() {

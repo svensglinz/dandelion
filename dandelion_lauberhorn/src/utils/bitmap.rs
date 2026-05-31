@@ -40,7 +40,7 @@ impl<const N: usize> BitMap<N> {
 
     pub fn release_slot(&self, idx: usize) {
         debug_assert!(idx < N);
-        self.slots.fetch_or(1u64 << idx, Ordering::AcqRel);
+        self.slots.fetch_and(1u64 << idx, Ordering::AcqRel);
     }
 
 }

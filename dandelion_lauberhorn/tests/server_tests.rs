@@ -1,5 +1,4 @@
 use dandelion_lauberhorn::{
-    lauberhorn::types::DandelionArgs,
     webserver::schemas::{DandelionDeserializeResponse, InputItem, InputSet},
 };
 use std::vec;
@@ -38,16 +37,14 @@ fn invoke_service_test() {
     data.extend_from_slice(&i64::to_le_bytes(1));
     data.extend_from_slice(&i64::to_le_bytes(1));
 
-    let mat_request = DandelionArgs {
-        sets: vec![InputSet {
+    let mat_request = vec![InputSet {
             identifier: String::from(""),
             items: vec![InputItem {
                 identifier: String::from(""),
                 key: 0,
                 data: data,
             }],
-        }],
-    };
+        }];
 
     // Todo(@Sven): pass timeout as parameter
     let res =

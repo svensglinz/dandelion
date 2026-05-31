@@ -1,9 +1,8 @@
 use std::ffi::{c_char, c_void};
-use std::marker::PhantomData;
-use crate::lauberhorn::execution::dandelion_handler;
-use crate::lauberhorn::marshal::{DandelionNestedResponse, RpcDecode, RpcEncode, dandelion_free, dandelion_marshal, dandelion_unmarshal};
-use crate::lauberhorn::{types::DandelionRPCRequest};
+use crate::execution::{comp_set_to_input_set, dandelion_handler};
+use crate::lauberhorn::marshal::{DandelionRPCRequest, DandelionRPCResponse};
 use crate::runtime::RuntimeContext;
+use crate::webserver::schemas::InputSet;
 use dandelion_commons::records::Recorder;
 use dandelion_server::DandelionBody;
 use machine_interface::function_driver::thread_utils::Engine;
@@ -45,10 +44,8 @@ unsafe extern "C" {
     );
 
     pub fn lauberhorn_await_any(
-        set:  *const AwaitSet, result: *mut LauberhornCompletion
+        set:  *const AwaitSetRaw, result: *mut LauberhornCompletion
     ) -> bool;
-
-    pub fn lauberhorn_await_all(set: *const AwaitSet, results: *mut AwaitResult, len: usize) -> bool;
 
     pub fn lauberhorn_call_async(
         ep: *const LauberhornRpcEndpointRaw, payload: *const c_void,
@@ -166,40 +163,20 @@ pub extern "C" fn dandelion_function_handler<E: Engine>(
     // returns NULL on error, else pointer to result context
     let result = dandelion_handler::<E>(ctx, rpc_req).unwrap();
     // for now handle it here
-    let result = DandelionBody::new(result, &Recorder {}); // THIS SHOULD BE DONE IN THE DESERIALIZER ? 
-    Box::into_raw(Box::new(result)) as *mut c_void 
+
+    let sets: Vec<InputSet> = result
+        .into_iter()
+        .flatten()
+        .map(|comp_set| comp_set_to_input_set(&comp_set))
+        .collect();
+    
+    let response = DandelionRPCResponse {
+        sets: sets
+    };  
+
+    // let result = DandelionBody::new(result, &Recorder {}); // THIS SHOULD BE DONE IN THE DESERIALIZER ? 
+    Box::into_raw(Box::new(response)) as *mut c_void 
 }
-
-// this handler is registered under a different port, and returns only an INDEX into the global results table
-pub extern "C" fn dandelion_nested_function_handler<E: Engine>(
-    data: *mut c_void, // *mut LauberhornServiceCtx<E>
-    req: *mut c_void,  // *mut DandelionRPCRequest
-    xid: u32,
-) -> *mut c_void {
-    let ctx = unsafe {&mut  *(data as *mut RuntimeContext<E>) };
-    let rpc_req = unsafe { &mut *(req as *mut DandelionRPCRequest) };
-
-    // returns NULL on error, else pointer to result context
-    let result = dandelion_handler::<E>(ctx, rpc_req).unwrap();
-
-    let resp = match ctx.nested_results.claim_manual() {
-        Some((idx, obj)) {
-            // need an option to write into an array ? 
-            Box::new(DandelionNestedResponse {
-                idx:idx
-            })
-        },
-            None => {
-                Box::new(DandelionNestedResponse {
-                    idx: -1,
-                }),
-            }
-        };
-        
-        Box::into_raw(resp)
-
-}
-
 
 /// called to free result
 pub extern "C" fn dandelion_function_free(ptr: *mut c_void) {

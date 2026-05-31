@@ -6,7 +6,6 @@ use crate::lauberhorn::ffi::RpcOps;
 use crate::lauberhorn::ffi::dandelion_function_free;
 use crate::lauberhorn::ffi::dandelion_function_handler;
 use crate::lauberhorn::lauberhorn::Lauberhorn;
-use crate::lauberhorn::marshal::DandelionNestedResponse;
 use crate::lauberhorn::marshal::DandelionRPCRequest;
 use crate::lauberhorn::marshal::DandelionRPCResponse;
 use crate::utils::objectpool::ObjectPool;
@@ -15,7 +14,6 @@ use dandelion_commons::DandelionResult;
 use dandelion_commons::FunctionId;
 use dispatcher::function_registry::{FunctionRegistry, FunctionType};
 use log::debug;
-use machine_interface::composition::CompositionSet;
 use machine_interface::function_driver::thread_utils::Engine;
 use machine_interface::function_driver::Metadata;
 use machine_interface::machine_config::{
@@ -27,33 +25,47 @@ use std::ffi::c_void;
 use std::sync::Arc;
 use std::sync::LazyLock;
 
-const NUM_CORES: usize = 4; 
+const NUM_CORES: usize = 2; 
 
-static DANDELION_RPC_CODEC: LazyLock<Arc<RpcCodec>> = LazyLock::new(|| {
+static DANDELION_RPC_OPS_SERVER: RpcOps = RpcOps::for_server::<DandelionRPCRequest, DandelionRPCResponse>();
+static DANDELION_RPC_OPS_CLIENT: RpcOps = RpcOps::for_client::<DandelionRPCRequest, DandelionRPCResponse>();
+
+static DANDELION_RPC_SERVER_CODEC: LazyLock<Arc<RpcCodec>> = LazyLock::new(|| {
     Arc::new(RpcCodec {
         // for_server, for_client ? 
-        ops: &RpcOps::for_types::<DandelionRPCRequest, DandelionRPCResponse>(),
+        ops: &DANDELION_RPC_OPS_SERVER,
         private: std::ptr::null(),
     })
 });
 
-static DANDELION_NESTED_EP: LazyLock<Arc<LauberhornRpcEndpoint<DandelionRPCRequest, DandelionNestedResponse>>> = 
+static DANDELION_RPC_CLIENT_CODEC: LazyLock<Arc<RpcCodec>> = LazyLock::new(|| {
+    Arc::new(RpcCodec {
+        // for_server, for_client ? 
+        ops: &DANDELION_RPC_OPS_CLIENT,
+        private: std::ptr::null(),
+    })
+});
+
+
+static DANDELION_NESTED_EP: LazyLock<Arc<LauberhornRpcEndpoint<DandelionRPCRequest, DandelionRPCResponse>>> = 
     LazyLock::new(|| {
         Arc::new(LauberhornRpcEndpoint::new(
             "10.0.0.5", 
             1, 
             1, 
             1, 
-            1
+            1,
+            &DANDELION_RPC_OPS_CLIENT as *const RpcOps as *mut RpcOps
         ))
 });
 
 /// Context that the runtime exposes to functions
 pub struct RuntimeContext<E: Engine> {
     pub engines: ObjectPool<NUM_CORES, E>,
-    pub nested_results: ObjectPool<64, Vec<Option<CompositionSet>>>,
+    // pub nested_results: ObjectPool<64, Vec<Option<CompositionSet>>>,
     pub registry: Arc<FunctionRegistry>,
-    pub nested_ep: Arc<LauberhornRpcEndpoint<DandelionRPCRequest, DandelionNestedResponse>>
+    // TODO not necessary anymor e? 
+    pub nested_ep: Arc<LauberhornRpcEndpoint<DandelionRPCRequest, DandelionRPCResponse>>
 }
 
 /// Runtime
@@ -112,7 +124,7 @@ impl<E: Engine> Runtime<E> {
 
         let rt_ctx = Arc::new(RuntimeContext{
             engines: ObjectPool::new(engines),
-            nested_results: ObjectPool::new(Vec::with_capacity(64)),
+            // nested_results: ObjectPool::new(Vec::with_capacity(64)),
             registry: registry.clone(),
             nested_ep: (*DANDELION_NESTED_EP).clone()
         });
@@ -126,7 +138,7 @@ impl<E: Engine> Runtime<E> {
             },
             1, 1, 1,
             11111, false,
-            (*DANDELION_RPC_CODEC).clone()
+            (*&DANDELION_RPC_SERVER_CODEC).clone()
         )?;
         Ok(Runtime { 
             ctx: rt_ctx, 

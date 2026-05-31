@@ -1,6 +1,9 @@
 use std::{collections::HashMap, ffi::c_void};
 
-use crate::lauberhorn::{codec::LauberhornRpcEndpoint, ffi::{AwaitSetRaw, LauberhornCompletion, LauberhornRpcEndpointRaw, lauberhorn_await_any, lauberhorn_call_async}, marshal::{RpcDecode, RpcEncode}};
+use crate::lauberhorn::{codec::LauberhornRpcEndpoint,
+    ffi::{AwaitSetRaw, LauberhornCompletion, LauberhornRpcEndpointRaw,
+    lauberhorn_await_any, lauberhorn_call_async}, 
+    marshal::{RpcDecode, RpcEncode}};
 
 #[repr(C)]
 pub struct AwaitSet<T: RpcDecode> {
@@ -88,16 +91,16 @@ impl<T: RpcDecode> AsyncCallHandle<T> {
     }
 }
 
-pub fn call_async<In: RpcDecode, Out: RpcEncode>(
-    ep: &LauberhornRpcEndpoint<In, Out>,
-    payload: &Out,
-) -> Result<AsyncCallHandle<In>, ()> {
+pub fn call_async<Req: RpcEncode, Resp: RpcDecode>(
+    ep: &LauberhornRpcEndpoint<Req, Resp>,
+    payload: &Req,
+) -> Result<AsyncCallHandle<Resp>, ()> {
     let res = unsafe {
         // from ffi
         lauberhorn_call_async(
             &ep.inner as *const LauberhornRpcEndpointRaw,
-            payload as *const Out as *const c_void,
-            std::mem::size_of::<Out>(),
+            payload as *const Req as *const c_void,
+            std::mem::size_of::<Req>(),
         )
     };
 

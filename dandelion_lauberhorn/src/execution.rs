@@ -1,9 +1,7 @@
 use crate::lauberhorn::laub_async::{AwaitSet, call_async};
-use crate::lauberhorn::types::{
-    DandelionArgs, DandelionNestedResponse, DandelionRPCRequest
-};
-use crate::lauberhorn::*;
+use crate::lauberhorn::marshal::{DandelionRPCRequest, DandelionRPCResponse, InputSets};
 use crate::runtime::RuntimeContext;
+use crate::webserver::schemas::{InputItem, InputSet};
 use bytes::Bytes;
 use dandelion_commons::records::Recorder;
 use dandelion_commons::FunctionId;
@@ -12,15 +10,15 @@ use dispatcher::dispatcher::DispatcherInput;
 use dispatcher::function_registry::{FunctionInfo, FunctionType};
 use log::{debug, error};
 use machine_interface::composition::{
-    Composition, CompositionSet, FunctionDependencies, InputSetDescriptor,
-    JoinStrategy, ShardingMode,
+    Composition, CompositionSet, FunctionDependencies, InputSetDescriptor, JoinIterator, JoinStrategy, ShardingMode
 };
+use itertools::Itertools;
 use machine_interface::function_driver::functions::FunctionAlternative;
 use machine_interface::function_driver::thread_utils::Engine;
 use machine_interface::function_driver::Metadata;
 use machine_interface::machine_config::EngineType;
 use machine_interface::memory_domain::bytes_context::BytesContext;
-use machine_interface::memory_domain::{Context, ContextType};
+use machine_interface::memory_domain::{Context, ContextTrait, ContextType};
 use machine_interface::{DataItem, DataSet};
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
@@ -29,17 +27,46 @@ use std::time::Instant;
 // type of pointer lauberhorn returns
 type LauberhornExecResult = *mut DandelionBody;
 
+
+pub fn comp_set_to_input_set(comp_set: &CompositionSet) -> InputSet {
+    let mut items = Vec::new();
+    let mut ident = String::new();
+
+    for (key, item_idx, ctx) in comp_set {
+        let data_set = ctx.content[comp_set.set_index].as_ref().unwrap();
+        if ident.is_empty() {
+            ident = data_set.ident.clone();
+        }
+        let data_item = &data_set.buffers[item_idx];
+        let pos = data_item.data;
+
+        let bytes = ctx.context
+            .get_chunk_ref(pos.offset, pos.size)
+            .expect("failed to read item bytes");
+
+        items.push(InputItem {
+            identifier: data_item.ident.clone(),
+            key: key as u32,
+            data: bytes.to_vec()
+        });
+    }
+
+    InputSet { identifier: ident, items }
+
+}
 /// Parse a BSON-serialized `DandelionRequest` into a `Context`.
 ///
 /// Lauberhorn RPC delivers each request as a single contiguous buffer,
 /// so this is a simplified single-frame variant of `BytesContext::from_bytes_vec`.
 /// // Q: is buffer persistent on Lauberhorn until request is finished executing ?
 /// Yes: -> implement copy-free version
-fn parse_req_ctx(input: &DandelionArgs) -> Result<Context, ()> {
+/// 
+/// TODO(@Sven): potentially as member function of ...
+fn parse_req_ctx_from_input_sets(input: &Vec<InputSet>) -> Result<Context, ()> {
     let mut flat_data = Vec::new();
     let mut content = Vec::new();
 
-    for set in &input.sets {
+    for set in input {
         let mut buffers = Vec::new();
         for item in &set.items {
             let offset = flat_data.len();
@@ -201,9 +228,9 @@ pub fn get_sharding(
     
 // dispatcher manages execution of individual
 struct Dispatcher<E: Engine> {
-    ctx: RuntimeContext<E>,
+    ctx: Arc<RuntimeContext<E>>,
     // handle -> (task_id, shard_idx)
-    await_set: AwaitSet<DandelionNestedResponse>,
+    await_set: AwaitSet<DandelionRPCResponse>,
     in_flight: HashMap<i32, (usize, usize)>,
     tasks: HashMap<usize, Task>,
 
@@ -217,12 +244,13 @@ struct Dispatcher<E: Engine> {
     // completed composition set outputs
     output_sets: Vec<Option<CompositionSet>>,
 
-    next_task_id: usize,
+    next_task_id: usize
 }
 
 impl<E: Engine> Dispatcher<E> { // TODO(@Sven): can we remove the type param somehow ? 
+
     fn new(
-        ctx: RuntimeContext<E>,
+        ctx: Arc<RuntimeContext<E>>,
         output_sets: Vec<Option<CompositionSet>>,
     ) -> Self {
         Dispatcher {
@@ -254,6 +282,7 @@ impl<E: Engine> Dispatcher<E> { // TODO(@Sven): can we remove the type param som
 
     // provide a task to the dispatcher (before running it)
     fn insert_task(&mut self, task: Task) {
+
         // take ownership of task
         let task_id = self.next_task_id;
         self.next_task_id += 1;
@@ -274,9 +303,11 @@ impl<E: Engine> Dispatcher<E> { // TODO(@Sven): can we remove the type param som
 
     // enqueue a ready task to execute its shards
     fn enqueue_task(&mut self, task_id: usize) {
+
+        // retreieve task
         let task = &self.tasks[&task_id];
 
-        // split the tasks's inputs into shards
+        // split the task's inputs into shards
         let shards = get_sharding(
             task.inputs.clone(),
             task.join_info.0.clone(),
@@ -286,7 +317,7 @@ impl<E: Engine> Dispatcher<E> { // TODO(@Sven): can we remove the type param som
         // add all shards as pending
         let count = shards.len().max(1);
         self.pending_shards.insert(task_id, count);
-        self.shard_results.insert(task_id, vec![vec![None]; count]);
+        self.shard_results.insert(task_id, vec![vec![]; count]);
 
         for (shard_idx, shard) in shards.into_iter().enumerate() {
             self.shard_queue.push_back((task_id, shard_idx, shard));
@@ -301,32 +332,38 @@ impl<E: Engine> Dispatcher<E> { // TODO(@Sven): can we remove the type param som
     // 4.  Check if this has produced any newly executable tasks, if yes, shard and push to ready queue
     // 5.  Repeat
     fn run(&mut self) {
+
+        // drain queue and execute RPC requests until
+        // 1. shard queue is empty
+        // 2. no more in flight requests
         while !self.in_flight.is_empty() || !self.shard_queue.is_empty() {
-            // dispatch all possible ready shards
             self.try_drain_queue();
 
             // await a result
             match self.await_set.await_any() {
                 None => continue,
                 // provide result
-                Some(ref handle) => {
+                Some(ref mut handle) => {
                     
+                    // extract response
                     let r = handle.take_data().unwrap();
+                    let (task_id, shard_idx) = self.in_flight
+                        .remove(&(handle.id as i32))
+                        .unwrap();
 
-                    // need to be able to MOVE out of it ? 
-                    let data =
-                        self.ctx.nested_results.get(r.idx).unwrap();
+                    // transform deserialized result (Vec<InputSet> to Vec<Option<CompositionSet>>
+                    let result = input_sets_to_comp_sets(&r.sets);
 
-                    // TODO(@Sven): release by index better ? 
-                    self.ctx.nested_results.release(&data);
 
-                    let (task_id, shard_idx) =
-                        self.in_flight.remove(&(r.idx as i32)).unwrap();
+                // q: will this work even it we are working in a regular memory context
+                // and not in teh memory context of a function 
+                // ie we skip pulling the correpeonsening function, looking up its domain 
+                // and calling transfer_input_sets on it ? 
 
                     self.insert_result(
                         task_id,
                         shard_idx,
-                        data,
+                        result,
                     );
                 }
             }
@@ -336,14 +373,21 @@ impl<E: Engine> Dispatcher<E> { // TODO(@Sven): can we remove the type param som
     fn try_drain_queue(&mut self) {
         while let Some((task_id, shard_idx, shard)) = self.shard_queue.front() {
             
+            // TODO(@Sven): make element in shard queue a struct, that has a referrnce to the task in the task  map!
+            let task = self.tasks.get(task_id).unwrap();
+
+            // maybe also need a nested request format (ie. idx as well ...) and then store this in a separate slot too
             let request = DandelionRPCRequest {
-                function_name: shard.____,
-                payload: // need to transform the data to ... here, or again just COMMUNICATE VIA INTERNAL SLOTS ? 
-            }
+                function_name: task.function_id.to_string(),
+                data: InputSets {
+                    sets: shard_to_input_sets(shard) // todo implement this
+                }
+            };
+
             // need to build a RpcRequest here with name & all to be supplied to the endpoint ...
-            match call_async(&*self.ctx.nested_ep, shard) {
-                Ok(handle_idx) => {
-                    self.in_flight.insert(handle_idx, (*task_id, *shard_idx));
+            match call_async(&*self.ctx.nested_ep, &request) {
+                Ok(handle) => {
+                    self.in_flight.insert(handle.id as i32, (*task_id, *shard_idx));
                     self.shard_queue.pop_front();
                 }
                 // no more detailed errors so far, but likely out of table slots
@@ -427,6 +471,30 @@ struct Task {
     // output set ids ??
     output_set_ids: Vec<Option<usize>>,
 }
+
+
+// helper functions
+
+fn shard_to_input_sets(shard: &Vec<Option<CompositionSet>>) -> Vec<InputSet> {
+    shard.iter()
+        .map(|opt| match opt {
+            Some(comp_set) => comp_set_to_input_set(comp_set),
+            // TODO(@Sven): InputSet::empty(),
+            None => InputSet { identifier: String::new(), items: vec![] },
+        }).collect()
+}
+
+fn input_sets_to_comp_sets(sets: &Vec<InputSet>) -> Vec<Option<CompositionSet>> {
+    let ctx = parse_req_ctx_from_input_sets(sets).unwrap();
+    let n = ctx.content.len();
+    let arc = Arc::new(ctx);
+    (0..n).map(|set_id| {
+        arc.content[set_id]
+            .as_ref()
+            .map(|_| CompositionSet::from((set_id, vec![arc.clone()])))
+    }).collect()
+}
+
 
 // One node in the graph
 impl Task {
@@ -546,19 +614,21 @@ impl Task {
 //     // do output collection, accumulator etc...
 // }
 
+
 fn reduce_shards(
     shard_results: Vec<Vec<Option<CompositionSet>>>,
     output_mapping: &[Option<usize>],
 ) -> Vec<(usize, Option<CompositionSet>)> {
+
     let mut combined: Vec<Option<CompositionSet>> =
         vec![None; output_mapping.len()];
 
     for shard in shard_results {
         for (slot, set) in combined.iter_mut().zip(shard) {
-            if let (Some(old), Some(new)) = (slot.as_mut(), set) {
-                old.combine(new).expect("combine failed");
-            } else if slot.is_none() {
-                *slot = set;
+            match (slot.as_mut(), set) {
+                (Some(old), Some(new)) => old.combine(new).expect("combine failed"),
+                (None, some) => *slot = some, 
+                _ => {}
             }
         }
     }
@@ -576,7 +646,7 @@ fn reduce_shards(
 // and we can continue processing it
 
 pub fn execute_composition<E: Engine>(
-    ctx: &RuntimeContext<E>,
+    ctx: Arc<RuntimeContext<E>>,
     composition: Composition,
     inputs: Vec<Option<CompositionSet>>,
     caching: bool,
@@ -584,13 +654,14 @@ pub fn execute_composition<E: Engine>(
     // initialize output sets
     let mut output_sets: Vec<Option<CompositionSet>> =
         vec![None; composition.output_map.len()];
+
     for (input_index, input_set) in inputs.iter().enumerate() {
         if let Some(&out_index) = composition.output_map.get(&input_index) {
             output_sets[out_index] = input_set.clone();
         }
     }
 
-    let mut dispatcher = Dispatcher::new(ctx, output_sets);
+    let mut dispatcher = Dispatcher::new(ctx.clone(), output_sets);
 
     // classify tasks into ready / blocked
     for dep in &composition.dependencies {
@@ -598,9 +669,8 @@ pub fn execute_composition<E: Engine>(
             None => {
                 // required input was empty, immediately emit None outputs
                 for &out_id in dep.output_set_ids.iter().flatten() {
-                    if let Some(&out_idx) = composition.output_map.get(&out_id)
-                    {
-                        output_sets[out_idx] = None;
+                    if let Some(&out_idx) = composition.output_map.get(&out_id) {
+                        dispatcher.output_sets[out_idx] = None;
                     }
                 }
             }
@@ -609,7 +679,6 @@ pub fn execute_composition<E: Engine>(
             }
         }
     }
-
     dispatcher.run();
 
     // TODO(@Sven): check if result is complete or if we aborted early
@@ -624,7 +693,8 @@ pub fn execute_function<E: Engine>(
     request: &mut DandelionRPCRequest, // will be assembled HERE
 ) -> Result<Vec<Option<CompositionSet>>, ()> {
 
-    let context = match parse_req_ctx(&request.payload) {
+    // TODO(@Sven): turn this into Vec<InputSet> -> Vec<Option<CompositionSet> in one go
+    let context = match parse_req_ctx_from_input_sets(&request.data.sets) {
         Ok(ctx) => ctx,
         Err(_) => {
             error!("Failed to parse request context");
@@ -693,7 +763,7 @@ pub fn execute_function<E: Engine>(
     transfer_input_sets(&mut function_context, &func_info.metadata, &input_vec);
 
     // execute function on engine
-    let ctx = unsafe {
+    let ctx = 
         engine
             .run(
                 function.config.clone(),
@@ -703,8 +773,7 @@ pub fn execute_function<E: Engine>(
             .map_err(|e| {
                 error!("Function execution failed: {}", e);
                 ()
-            })?
-    };
+            })?;
 
     Ok(make_comp_set(ctx))
 }
