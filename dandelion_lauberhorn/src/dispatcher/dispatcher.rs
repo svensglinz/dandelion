@@ -3,6 +3,7 @@ use std::{
     sync::Arc,
 };
 
+use dispatcher::function_registry::CompositionInfo;
 use machine_interface::{
     composition::{get_sharding, CompositionSet},
     function_driver::thread_utils::Engine,
@@ -45,7 +46,7 @@ pub struct Dispatcher<E: Engine> {
 
     // completed composition set outputs
     pub output_sets: Vec<Option<CompositionSet>>,
-
+    pub composition_info: CompositionInfo,
     pub next_task_id: usize,
 }
 
@@ -55,9 +56,24 @@ impl<E: Engine> Dispatcher<E> {
     /// create a new dispatcher for the
     pub fn new(
         ctx: Arc<RuntimeContext<E>>,
-        output_sets: Vec<Option<CompositionSet>>,
+        inputs: Vec<Option<CompositionSet>>,
+        comp_info: CompositionInfo,
     ) -> Self {
-        Dispatcher {
+
+        // initialize output sets
+        // we need #(highest index output_map maps to) + 1
+        // number of slots to store intermediate and final outputs
+        let num_slots = comp_info.composition.output_map.keys().max().copied().unwrap_or(0) + 1;
+        let mut output_sets = vec![None; num_slots];
+
+        //  check if some of the inputs are outputs, if yes, store directly
+        for (input_index, input_set) in inputs.iter().enumerate() {
+            if let Some(&out_index) = comp_info.composition.output_map.get(&input_index) {
+                output_sets[out_index] = input_set.clone();
+            }
+        }
+
+        let mut dispatcher = Dispatcher {
             ctx,
             await_set: AwaitSet::new(),
             in_flight: HashMap::new(),
@@ -68,12 +84,32 @@ impl<E: Engine> Dispatcher<E> {
             shard_queue: VecDeque::new(),
             shard_results: HashMap::new(),
             output_sets,
+            composition_info: comp_info.clone(),
             next_task_id: 0,
+        };
+
+        // classify tasks into ready / blocked
+        for dep in &comp_info.composition.dependencies {
+            match Task::from_dependency(dep, &inputs) {
+                None => {
+                    // required input was empty, emit None outputs
+                    for &out_id in dep.output_set_ids.iter().flatten() {
+                        if let Some(&out_idx) = comp_info.composition.output_map.get(&out_id)
+                        {
+                            dispatcher.output_sets[out_idx] = None;
+                        }
+                    }
+                }
+                Some(task) => {
+                    dispatcher.insert_task(task);
+                }
+            }
         }
+        dispatcher
     }
 
     // provide a task to the dispatcher (before running it)
-    pub fn insert_task(&mut self, task: Task) {
+    fn insert_task(&mut self, task: Task) {
         // take ownership of task
         let task_id = self.next_task_id;
         self.next_task_id += 1;
@@ -180,6 +216,19 @@ impl<E: Engine> Dispatcher<E> {
             "[dispatcher::run] done output_sets={}",
             self.output_sets.len()
         );
+    }
+
+    // get the final output sets after execution is done, ordered by the output index in the composition
+    pub fn get_result(&self) -> Vec<Option<CompositionSet>> {
+        let mut final_output: Vec<(usize, Option<CompositionSet>)> = self.output_sets
+            .iter()
+            .enumerate()
+            .filter(|(slot_idx, _)| self.composition_info.composition.output_map.contains_key(slot_idx))
+            .map(|(slot_idx, set)| (slot_idx, set.clone()))
+            .collect();
+        
+        final_output.sort_by_key(|(slot_idx, _)| self.composition_info.composition.output_map[slot_idx]);
+        final_output.into_iter().map(|(_, set)| set).collect()
     }
 
     /// execute as many requests as lauberhorn permits
