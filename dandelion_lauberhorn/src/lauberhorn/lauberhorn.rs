@@ -1,13 +1,13 @@
 use std::{ffi::c_void, sync::Arc};
 
 use dandelion_commons::{DandelionError, DandelionResult};
-use machine_interface::function_driver::thread_utils::Engine;
 
 use crate::{
     lauberhorn::ffi::{
-            LauberhornCtx, LauberhornHandler, LauberhornUserCb, LauberhornWorker, RpcCodec, lauberhorn_create_worker, lauberhorn_dereg_srv, lauberhorn_init, lauberhorn_join_worker, lauberhorn_reg_srv
+            LauberhornCtx, LauberhornHandler, LauberhornUserCb, LauberhornWorker, RpcCodec,
+            lauberhorn_create_worker, lauberhorn_dereg_srv,
+            lauberhorn_init, lauberhorn_join_worker, lauberhorn_reg_srv
         },
-    runtime::RuntimeContext,
 };
 
 /// Wrapper around the lauberhorn C library.

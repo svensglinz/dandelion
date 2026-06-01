@@ -2,11 +2,11 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use machine_interface::{
-    composition::CompositionSet,
-    memory_domain::{
-        bytes_context::BytesContext, Context, ContextTrait, ContextType,
-    },
-    DataItem, DataSet,
+    DataItem, DataSet, composition::CompositionSet, function_driver::{
+        Metadata, functions::FunctionAlternative},
+        machine_config::EngineType, memory_domain::{
+        Context, ContextTrait, ContextType, bytes_context::BytesContext
+    }
 };
 
 use crate::webserver::schemas::{InputItem, InputSet};
@@ -145,4 +145,50 @@ pub fn reduce_shards(
         }
     }
     result
+}
+
+/// Copy input sets from the incoming context into the isolation context.
+pub fn transfer_input_sets(
+    function_context: &mut Context,
+    metadata: &Metadata,
+    input_sets: &Vec<Option<CompositionSet>>,
+) {
+    for (set_index, (input_set_name, static_set)) in
+        metadata.input_sets.iter().enumerate()
+    {
+        let transfer_option = static_set
+            .as_ref()
+            .or_else(|| input_sets.get(set_index).and_then(|set| set.as_ref()));
+
+        let capacity = transfer_option.map_or(0, |set| set.len());
+
+        function_context.content.push(Some(DataSet {
+            ident: input_set_name.clone(),
+            buffers: Vec::with_capacity(capacity),
+        }));
+
+        if let Some(transfer_set) = transfer_option {
+            for (source_set_index, source_item_index, source_context) in
+                transfer_set
+            {
+                let _ = machine_interface::memory_domain::transfer_data_item(
+                    function_context,
+                    source_context,
+                    set_index,
+                    128, // where does this come from ?
+                    input_set_name.as_str(),
+                    source_set_index,
+                    source_item_index,
+                );
+            }
+        }
+    }
+}
+
+/// Find the function variant matching the given engine type.
+pub fn get_function_variant(
+    engine_type: EngineType,
+    alternatives: &[Arc<FunctionAlternative>],
+) -> Option<Arc<FunctionAlternative>> {
+    alternatives.iter().find(|a| a.engine == engine_type).cloned()
 }

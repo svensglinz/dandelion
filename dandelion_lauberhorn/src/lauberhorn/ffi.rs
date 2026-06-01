@@ -3,7 +3,6 @@ use std::sync::Arc;
 use crate::dispatcher::execution::dandelion_handler;
 use crate::lauberhorn::marshal::{DandelionRPCRequest, DandelionRPCResponse};
 use crate::runtime::RuntimeContext;
-use crate::webserver::schemas::InputSet;
 use machine_interface::function_driver::thread_utils::Engine;
 
 // ---------------------------------------------------------------------------
