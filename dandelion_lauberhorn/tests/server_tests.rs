@@ -52,6 +52,104 @@ fn get_matmac_reg_req() -> RegisterFunction
 }
 
 #[test]
+fn test_multi_node() {
+let composition = r#"
+    function matmul_x86 (mat_in) => (matmul_out);
+    function matmac_x86 (mat_A, mat_B, mat_C) => (matmac_out);
+    composition graph (matA, matB, matC, matD) => (matResult) {
+        matmul_x86(mat_in = all matA) => (mat1_out = matmul_out);
+        matmul_x86(mat_in = all matB) => (mat2_out = matmul_out);
+        matmac_x86(mat_A = all mat1_out, mat_B = all mat2_out, mat_C = all matC) => (mat3_out = matmac_out);
+        matmac_x86(mat_A = all mat3_out, mat_B = all matD, mat_C = all mat2_out) => (matResult = matmac_out);
+    }
+"#;
+
+        // 1. register functions
+        let reg_req = get_matmac_reg_req();
+        let res = register_function("http://localhost:6000/register/function", &reg_req);
+        assert_eq!(res.unwrap().status(), 200, "Failed to register function");
+    
+        let reg_req_matmul = get_matmul_reg_req();
+        let res = register_function("http://localhost:6000/register/function", &reg_req_matmul);
+        assert_eq!(res.unwrap().status(), 200, "Failed to register function");
+
+        // 3. register composition
+        let chain_request = RegisterChain {
+            composition: composition.to_string(),
+        };
+
+        let res = register_composition("http://localhost:6000/register/composition", &chain_request)
+            .expect("Failed to register composition");
+
+         // 2. build arguments for composition
+        let matrix_a: Vec<u8> = vec![
+            2i64,      // two rows
+            1, 1,   // row 1
+            1, 1    // row 2
+        ].iter()
+        .flat_map(|x| x.to_le_bytes())
+        .collect();
+
+        let matrix_b: Vec<u8> = vec![
+            2i64,      // two rows
+            1, 2,   // row 1
+            3, 4    // row 2
+        ].iter()
+        .flat_map(|x| x.to_le_bytes())
+        .collect();
+
+        let matrix_c: Vec<u8> = vec![
+            2i64,      // two rows
+            5, 6,   // row 1
+            7, 8    // row 2
+        ].iter()
+        .flat_map(|x| x.to_le_bytes())
+        .collect();
+
+        let matrix_d: Vec<u8> = vec![
+            2i64,      // two rows
+            1, -1,   // row 1
+            -1, 1    // row 2
+        ].iter()
+        .flat_map(|x| x.to_le_bytes())
+        .collect();
+
+    let matrices = vec![matrix_a, matrix_b, matrix_c, matrix_d];
+    let mut input_sets = Vec::new();
+    for i in 0..4 {
+        input_sets.push({
+            InputSet {
+                identifier: String::from(""),
+                items: vec![InputItem {
+                    identifier: String::from(""),
+                    key: 0,
+                    data: matrices[i as usize].clone(),
+                }],
+            }
+        });
+    }
+    
+    let res =
+    invoke_service("graph", 1, 1, 1, "10.0.0.5", 12345, input_sets)
+    .expect("invoke service failed");
+
+    println!("Response from call_function: {:?}", res);
+
+    let d = res.sets[0].items[0].data
+    .chunks(8)
+    .map(|chunk| i64::from_le_bytes(chunk.try_into().unwrap()))
+    .collect::<Vec<i64>>();
+    println!("Output data: {:?}", d);
+    assert_eq!(d, vec![2, -36, 52, -30, 66]);
+    // let res =   invoke_service("graph", 1, 1, 1, "10.0.0.5", 12345, input)
+    //     .expect("Failed to invoke composition");
+// 
+    // print!("Response from composition invocation: {:?}", res);
+}
+
+
+
+#[test]
 fn test_matmac_composition_sharding() {
 
 let composition = r#"
