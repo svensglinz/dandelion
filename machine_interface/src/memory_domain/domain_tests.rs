@@ -2,7 +2,7 @@ use crate::memory_domain::{
     test_resource::get_resource, transfer_data_item, transfer_memory, Context, ContextTrait,
     ContextType, MemoryDomain, MemoryResource,
 };
-use dandelion_commons::{DandelionError, DandelionResult, DomainError};
+use dandelion_commons::{DError, DandelionError, DandelionResult, DomainError};
 use std::sync::Arc;
 
 #[cfg(any(feature = "cheri", feature = "kvm", feature = "mmu"))]
@@ -22,21 +22,30 @@ fn try_acquire<D: MemoryDomain>(
     let init_result = D::init(resource);
     let domain = init_result.expect("should have initialized memory domain");
     let context_result = domain.acquire_context(acquisition_size);
-    match (expect_success, context_result) {
-        (true, Ok(_))
-        | (false, Err(DandelionError::OutOfMemory))
-        | (false, Err(DandelionError::DomainError(DomainError::InvalidMemorySize)))
-        | (false, Err(DandelionError::MemoryAllocationError)) => assert!(true),
-        (false, Ok(_)) => assert!(
-            false,
-            "Got okay for allocating context with size {}",
-            acquisition_size
-        ),
-        (_, Err(err)) => assert!(
-            false,
-            "Encountered unexpected error when acquireing context: {:?}",
-            err
-        ),
+    if expect_success {
+        if !context_result.is_ok() {
+            panic!(
+                "Got okay for allocating context with size {}",
+                acquisition_size
+            );
+        }
+    } else {
+        if context_result.is_ok() {
+            panic!(
+                "Encountered unexpected error when acquireing context: {:?}",
+                context_result.unwrap_err()
+            );
+        } else {
+            match context_result.unwrap_err().error {
+                DandelionError::OutOfMemory
+                | DandelionError::DomainError(DomainError::InvalidMemorySize)
+                | DandelionError::MemoryAllocationError => (),
+                err => panic!(
+                    "Encountered unexpected error when acquireing context: {:?}",
+                    err
+                ),
+            }
+        }
     }
 }
 
@@ -61,7 +70,14 @@ fn init_domain<D: MemoryDomain>(arg: MemoryResource) -> Box<dyn MemoryDomain> {
 fn write(ctx: &mut Context, offset: usize, size: usize, expect_success: bool) {
     let write_error = ctx.write(offset, &vec![BYTEPATTERN; size]);
     match (expect_success, write_error) {
-        (false, Err(DandelionError::InvalidWrite)) | (true, Ok(())) => (),
+        (
+            false,
+            Err(DError {
+                error: DandelionError::InvalidWrite,
+                ..
+            }),
+        )
+        | (true, Ok(())) => (),
         (false, Ok(())) => panic!("Unexpected write success"),
         (_, Err(err)) => panic!("Unexpected write error: {:?}", err),
     }
@@ -75,7 +91,7 @@ fn read(ctx: &mut Context, offset: usize, size: usize, expect_success: bool) {
     match (expect_success, read_error) {
         (true, Ok(())) => assert_eq!(vec![BYTEPATTERN; size], read_buffer),
         (false, Ok(())) => panic!("Unexpected ok from read that should fail with context size: {}, read offset: {}, read size: {}", ctx.size, offset, size),
-        (false, Err(DandelionError::InvalidRead)) => (),
+        (false, Err(DError {error:DandelionError::InvalidRead, ..})) => (),
         (_, Err(err)) => panic!("Unexpected error while reading: {:?}", err),
     }
 }
@@ -88,14 +104,14 @@ fn read_system_context(
     size: usize,
     expect_success: bool,
 ) {
-    let _ = transfer_memory(system_ctx, Arc::from(base_ctx), 0, 0, system_ctx.size);
+    let _ = transfer_memory(system_ctx, &Arc::from(base_ctx), 0, 0, system_ctx.size);
 
     let mut read_buffer = vec![0; size];
     let read_error = system_ctx.read(offset, &mut read_buffer);
     match (expect_success, read_error) {
         (true, Ok(())) => assert_eq!(vec![BYTEPATTERN; size], read_buffer),
         (false, Ok(())) => panic!("Unexpected ok from read that should fail with context size: {}, read offset: {}, read size: {}", system_ctx.size, offset, size),
-        (false, Err(DandelionError::InvalidRead)) => (),
+        (false, Err(DError{error: DandelionError::InvalidRead, ..})) => (),
         (_, Err(err)) => panic!("Unexpected error while reading: {:?}", err),
     }
 }
@@ -115,7 +131,13 @@ fn get_chunks(ctx: &mut Context, offset: usize, size: usize, expect_success: boo
                 total_read += chunk_ref.len()
             }
             (false, Ok(_)) => panic!("Unexpected ok from get_chunk_ref"),
-            (false, Err(DandelionError::InvalidRead)) => return,
+            (
+                false,
+                Err(DError {
+                    error: DandelionError::InvalidRead,
+                    ..
+                }),
+            ) => return,
             (_, Err(err)) => panic!("Unexpected error from get_chunk_ref {:?}", err),
         }
     }
@@ -129,7 +151,7 @@ fn get_chunks_system_context(
     size: usize,
     expect_success: bool,
 ) {
-    let _ = transfer_memory(system_ctx, Arc::from(base_ctx), 0, 0, system_ctx.size);
+    let _ = transfer_memory(system_ctx, &Arc::from(base_ctx), 0, 0, system_ctx.size);
 
     let mut total_read = 0usize;
     while total_read < size {
@@ -141,7 +163,13 @@ fn get_chunks_system_context(
                 total_read += chunk_ref.len()
             }
             (false, Ok(_)) => panic!("Unexpected ok from get_chunk_ref"),
-            (false, Err(DandelionError::InvalidRead)) => return,
+            (
+                false,
+                Err(DError {
+                    error: DandelionError::InvalidRead,
+                    ..
+                }),
+            ) => return,
             (_, Err(err)) => panic!("Unexpected error from get_chunk_ref {:?}", err),
         }
     }
@@ -171,7 +199,7 @@ fn transfer(mut source: Context, mut destination: Context) {
         .write(0, &vec![BYTEPATTERN; size])
         .expect("Writing should succeed");
     let source_ctxt_arc = Arc::new(source);
-    transfer_memory(&mut destination, source_ctxt_arc, 0, 0, size)
+    transfer_memory(&mut destination, &source_ctxt_arc, 0, 0, size)
         .expect("Should successfully transfer");
     let mut read_buffer = vec![0; size];
     destination
@@ -191,39 +219,33 @@ fn transfer_item(
     mut destination: Context,
     offset: usize,
     item_size: usize,
-    source_index: usize,
     destination_index: usize,
     expect_result: DandelionResult<()>,
 ) {
     source
         .write(offset, &vec![BYTEPATTERN; item_size])
         .expect("Writing should succeed");
-    if source.content.len() <= source_index {
-        source.content.resize_with(source_index + 1, || None);
-    }
-    source.content[source_index] = Some(crate::DataSet {
-        ident: String::from(""),
-        buffers: vec![crate::DataItem {
+
+    // make sure the destination set exists
+    destination.content.resize_with(destination_index + 1, || {
+        Some(crate::DataSet {
+            ident: String::from(""),
+            buffers: vec![],
+        })
+    });
+    let transfer_error = transfer_data_item(
+        &mut destination,
+        &Arc::new(source),
+        destination_index,
+        8,
+        &crate::DataItem {
             ident: String::from(""),
             data: crate::Position {
                 offset: offset,
                 size: item_size,
             },
             key: 0,
-        }],
-    });
-    destination.content.push(Some(crate::DataSet {
-        ident: String::from(""),
-        buffers: vec![],
-    }));
-    let transfer_error = transfer_data_item(
-        &mut destination,
-        Arc::new(source),
-        destination_index,
-        8,
-        "",
-        source_index,
-        0,
+        },
     );
     assert_eq!(transfer_error, expect_result);
     if expect_result.is_err() {
@@ -278,7 +300,7 @@ fn write_after_transfer(mut source: Context, mut destination: Context, chunck_si
     // transfer two chuncks and write overlapping with the start of the the fist one
     transfer_memory(
         &mut destination,
-        source_ctxt_arc.clone(),
+        &source_ctxt_arc,
         chunck_size,
         chunck_size,
         2 * chunck_size,
@@ -310,7 +332,7 @@ fn write_after_transfer(mut source: Context, mut destination: Context, chunck_si
     // write into and over the end of the of the second chunck
     transfer_memory(
         &mut destination,
-        source_ctxt_arc.clone(),
+        &source_ctxt_arc,
         test_offset,
         test_offset,
         2 * chunck_size,
@@ -343,7 +365,7 @@ fn write_after_transfer(mut source: Context, mut destination: Context, chunck_si
     // transfer 3 chuncks, write into the middle of the middle one
     transfer_memory(
         &mut destination,
-        source_ctxt_arc.clone(),
+        &source_ctxt_arc,
         test_offset,
         test_offset,
         3 * chunck_size,
@@ -376,7 +398,7 @@ fn write_after_transfer(mut source: Context, mut destination: Context, chunck_si
     // transfer 1 chunk write right after the end of the chunk
     transfer_memory(
         &mut destination,
-        source_ctxt_arc.clone(),
+        &source_ctxt_arc,
         test_offset,
         size - chunck_size,
         chunck_size,
@@ -493,7 +515,7 @@ macro_rules! domainTests {
             fn test_transfer_dataitem_item() {
                 let source = acquire::<$domain>($init, 4096);
                 let destination = acquire::<$domain>($init, 4096);
-                transfer_item(source, destination, 0, 128, 1, 2, Ok(()));
+                transfer_item(source, destination, 0, 128, 2, Ok(()));
             }
             #[test_log::test]
             fn test_write_after_transfer() {
@@ -516,7 +538,7 @@ macro_rules! systemsDomainTests {
             fn testing_transfer_system_context() {
                 let source = acquire::<$domain>($init, 4096);
                 let destination = acquire::<SystemMemoryDomain>($init, 4096);
-                transfer_item(source, destination, 0, 128, 1, 2, Ok(()));
+                transfer_item(source, destination, 0, 128, 2, Ok(()));
             }
             #[test_log::test]
             fn test_small_transfer_success() {
@@ -619,15 +641,18 @@ macro_rules! systemsDomainTests {
                     .write(0, &vec![BYTEPATTERN + 1; size])
                     .expect("Writing should succeed");
 
-                let _ = transfer_memory(&mut system_ctx, Arc::from(source1), 0, 0, 128);
-                let _ = transfer_memory(&mut system_ctx, Arc::from(source2), 128, 0, 128);
+                let _ = transfer_memory(&mut system_ctx, &Arc::from(source1), 0, 0, 128);
+                let _ = transfer_memory(&mut system_ctx, &Arc::from(source2), 128, 0, 128);
 
                 let chunk_ref_result = system_ctx.get_chunk_ref(0, 256);
                 match chunk_ref_result {
                     Ok(chunk_ref) => {
                         assert_eq!(&vec![BYTEPATTERN; 128], chunk_ref);
                     }
-                    Err(DandelionError::InvalidRead) => panic!("Invalid read"),
+                    Err(DError {
+                        error: DandelionError::InvalidRead,
+                        ..
+                    }) => panic!("Invalid read"),
                     Err(err) => panic!("Unexpected error from get_chunk_ref {:?}", err),
                 }
             }
@@ -664,7 +689,7 @@ macro_rules! systemsDomainTests {
                 let mut second_ctx = acquire::<$domain>($init, 128);
                 transfer_memory(
                     &mut second_ctx,
-                    Arc::from(initial_ctx),
+                    &Arc::from(initial_ctx),
                     0,
                     0,
                     pre_len + body_len,

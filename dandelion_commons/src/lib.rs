@@ -23,6 +23,8 @@ pub enum DandelionError {
     RequestError(FrontendError),
     /// Failures in user code or compositions
     UserError(UserError),
+    /// Error in inter communication to other nodes
+    Multinode(MultinodeError),
     /// trying to use a feature that is not yet implemented
     NotImplemented,
     // errors in configurations
@@ -107,6 +109,69 @@ pub enum DandelionError {
     WorkQueueFull,
 }
 
+#[derive(Clone, PartialEq)]
+pub struct DError {
+    pub error: DandelionError,
+    origin_file: &'static str,
+    origin_line: u32,
+    origin_column: u32,
+}
+
+impl DError {
+    pub fn new(error: DandelionError, file: &'static str, line: u32, column: u32) -> Self {
+        DError {
+            error,
+            origin_file: file,
+            origin_line: line,
+            origin_column: column,
+        }
+    }
+}
+
+impl PartialEq<DError> for DandelionError {
+    fn eq(&self, other: &DError) -> bool {
+        self.eq(&other.error)
+    }
+
+    fn ne(&self, other: &DError) -> bool {
+        self.ne(&other.error)
+    }
+}
+
+/// Construct an error from the given error
+#[macro_export]
+macro_rules! dandelion_err {
+    ($error: expr) => {
+        $crate::DError::new($error, core::file!(), core::line!(), core::column!())
+    };
+}
+
+/// Construct an Err() with the given dandelion error
+#[macro_export]
+macro_rules! err_dandelion {
+    ($error: expr) => {
+        Err($crate::DError::new(
+            $error,
+            core::file!(),
+            core::line!(),
+            core::column!(),
+        ))
+    };
+}
+
+/// Tries to create a new instance of the given type with given capacity and returns a
+/// `DandelionError::OutOfMemory` if it fails.
+#[macro_export]
+macro_rules! try_with_capacity {
+    ($type:ident, $size:expr) => {{
+        let mut container = $type::new();
+        container
+            .try_reserve($size)
+            .map(|_| container)
+            .map_err(|_| dandelion_err!(DandelionError::OutOfMemory))
+    }};
+}
+
 // Implement display to be compliant with core::error::Error
 impl core::fmt::Display for DandelionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -114,9 +179,25 @@ impl core::fmt::Display for DandelionError {
     }
 }
 
-impl std::error::Error for DandelionError {}
+impl core::fmt::Debug for DError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        return f.write_fmt(format_args!(
+            "{}:{}:{} {}",
+            self.origin_file, self.origin_line, self.origin_column, self.error
+        ));
+    }
+}
 
-pub type DandelionResult<T> = std::result::Result<T, DandelionError>;
+impl core::fmt::Display for DError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        return f.write_fmt(format_args!("{:?}", self));
+    }
+}
+
+impl std::error::Error for DandelionError {}
+impl std::error::Error for DError {}
+
+pub type DandelionResult<T> = std::result::Result<T, DError>;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DomainError {
@@ -158,10 +239,16 @@ pub enum DispatcherError {
     DependencyError,
     /// dispatcher got invalid composition
     InvalidComposition,
+    /// dispatcher got into an invalid system information state
+    InvalidSytemInformation,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum FrontendError {
+    /// The frontend request failed due to invalid request
+    InvalidRequest(String),
+    /// The frontend request failed due to an internal error
+    InternalError(String),
     /// Failed to get more frames from the connection
     FailledToGetFrames,
     /// Attemped to read bytes form stream to desiarialize but stream ran out
@@ -196,16 +283,24 @@ pub enum FunctionRegistryError {
 /// Errors related to function compositions
 #[derive(Debug, Clone, PartialEq)]
 pub enum CompositionError {
-    /// Failed to parse composition
+    /// Failed to parse composition.
     ParsingError,
-    /// Composition identifier is already taken
+    /// Composition identifier is already taken.
     DuplicateIdentifier(String),
-    /// Composition contains function that does not exist
-    ContainsInvalidFunction(String),
-    /// Function in parsing has identifier that is not defined in composition
-    FunctionInvalidIdentifier(String),
-    /// Set indentifier is produced by multiple functions in a composition
-    DuplicateSetName,
+    /// Composition declares a function that does not exist.
+    InvalidFunctionDeclaration(String),
+    /// Composition contains a function that was not declared.
+    UnknownFunction(String),
+    /// Composition contains an invalid function application.
+    InvalidFunctionApplication(String),
+    /// Function application uses undefined input set.
+    UndefinedDataSet(String),
+    /// Set indentifier is produced by multiple functions in a composition.
+    DuplicateSetName(String),
+    /// A set is joined a second time.
+    InvalidSecondJoin(String),
+    /// Set joins (non cross join) either an all/each sharding or an anyKeyed with a keyed sharding.
+    InvalidJoinSharding(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -235,4 +330,20 @@ pub enum UserError {
     /// Configured context is too small for execution,
     /// can happen in KVM zero copy, since each item takes up 2 as much virtual space
     SmallContext,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MultinodeError {
+    /// Failed to deserialize buffer
+    DeserializationError(String),
+    /// Failed to reach the remote node
+    ConnectionFailed(String),
+    /// The request was not sucessful
+    RequestFailed(String),
+    /// Configuration mismatch between the remote and local node
+    ConfigError(String),
+    /// Data received does not match the protocol, received unexpected message type
+    ProtocolError(String),
+    /// ???
+    BufferGone,
 }

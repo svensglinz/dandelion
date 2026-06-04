@@ -1,7 +1,27 @@
-use crate::memory_domain::Context;
-use dandelion_commons::{DandelionError, DandelionResult, DispatcherError, FunctionId};
-use itertools::Itertools;
-use std::{collections::BTreeMap, sync::Arc};
+use crate::{
+    composition::join_iterator::JoinIterator, memory_domain::Context, DataItem, DataSet, Position,
+};
+use core::fmt;
+use dandelion_commons::FunctionId;
+use log::{debug, trace};
+use std::{
+    cmp,
+    collections::BTreeMap,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    vec,
+};
+use tokio::sync::watch;
+
+mod join_iterator;
+
+#[cfg(test)]
+mod composition_tests;
+
+// TODO: determine suitable value here or come up with a better idea
+pub const DEFAULT_AUTOSHARDING_OFFLOAD_CONST: usize = 2;
 
 /// A composition has a composition wide id space that maps ids of
 /// the input and output sets to sets of individual functions to a unified
@@ -19,14 +39,19 @@ pub enum ShardingMode {
     All,
     Each,
     Key,
+    AnyEach,
+    AnyKey,
 }
 
+// TODO remove  one of left/right to simplify handling, push switching order into the parsing layer
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum JoinStrategy {
     Inner,
     Left,
     Right,
     Outer,
+    /// Produces the cross product of each set on both sides of the join.
+    /// If this is used for further joins, the keys of the right set of the cross join are used.
     Cross,
 }
 
@@ -58,6 +83,8 @@ impl ShardingMode {
             dparser::Sharding::All => Self::All,
             dparser::Sharding::Keyed => Self::Key,
             dparser::Sharding::Each => Self::Each,
+            dparser::Sharding::AnyKeyed => Self::AnyKey,
+            dparser::Sharding::AnyEach => Self::AnyEach,
         }
     }
 }
@@ -74,418 +101,438 @@ impl JoinStrategy {
     }
 }
 
+#[derive(Debug)]
+struct AnySetGroup {
+    largest_set_size: usize,
+    max_partitions: usize,
+    target_partitions: usize,
+    min_set_bytes: usize,
+    processed: bool,
+}
+
+impl AnySetGroup {
+    fn new(largest_set_size: usize, min_set_bytes: usize, max_partitions: usize) -> Self {
+        Self {
+            largest_set_size,
+            max_partitions,
+            target_partitions: 1,
+            min_set_bytes,
+            processed: false,
+        }
+    }
+}
+
+// TODO: move this to the queue when refactoring the project parts structure
+/// Contains system information used by the sharding policy.
+pub struct SystemInfo {
+    /// The number of local compute cores in the system (as a watcher so we can update remote nodes
+    /// if the local core count changes).
+    pub num_local_cores_watcher: watch::Receiver<usize>,
+    pub num_local_cores_sender: watch::Sender<usize>,
+    /// The number of remote compute cores in the system.
+    pub num_remote_cores: AtomicUsize,
+}
+
+pub struct AnyShardingParams {
+    /// A reference to the current system information maintained by the queue.
+    pub sys_info: Arc<SystemInfo>,
+    /// A constant that estimates the offload overhead when determining the number of partitions.
+    pub offload_const: usize,
+}
+
+pub enum AnyShardingMode {
+    /// Use the maximum number of partiions (`AnyKey` becomes `Key`, `AnyEach` becomes `Each`).
+    MaxSharding,
+    /// Use a fixed target number of partitions.
+    FixedSharding(usize),
+    /// Compute an "optimal" target number of partitions.
+    AutoSharding(AnyShardingParams),
+}
+
 /// Struct that has all locations belonging to one set, that is potentially spread over multiple contexts.
+/// Should only be constructed from a context, returning a list of all sets in the contexts content.
+/// By construction, empty sets should not be allowed to exist, as they should return None instead on construction
 #[derive(Clone, Debug)]
 pub struct CompositionSet {
-    /// items identfied by tuple of key, item index and the context reference
-    pub item_list: Vec<(u32, usize, Arc<Context>)>,
-     /// the set side inside the contexts the composition set represents
-    pub set_index: usize,
+    /// Each tuple in the list contains the DataItem with the metadata and the Context in which the item is stored.
+    /// The data: Position of the DataItem refers to offset and size within the Context.
+    item_list: Vec<(DataItem, Arc<Context>)>,
+    set_name: String,
 }
 
 impl CompositionSet {
-    pub fn is_empty(&self) -> bool {
-        self.item_list.is_empty()
-    }
-
     pub fn len(&self) -> usize {
         self.item_list.len()
     }
 
-    pub fn shard(self, mode: ShardingMode) -> Vec<CompositionSet> {
-        return match mode {
-            ShardingMode::All => {
-                vec![self]
-            }
-            ShardingMode::Key => {
-                let CompositionSet {
-                    mut item_list,
-                    set_index,
-                } = self;
-                let mut keyed_vec = Vec::new();
-                while !item_list.is_empty() {
-                    let (last_key, _, _) = item_list.last().unwrap();
-                    let mut position = item_list.len() - 1;
-                    while position > 0 && item_list[position - 1].0 == *last_key {
-                        position -= 1;
+    pub fn size(&self) -> usize {
+        self.item_list.iter().map(|(itm, _)| itm.data.size).sum()
+    }
+
+    pub fn get_name(&self) -> &String {
+        &self.set_name
+    }
+
+    pub fn from_context(mut context: Context) -> Vec<Option<Self>> {
+        // take the content from the context before putting it into an arc
+        let sets = core::mem::take(&mut context.content);
+        let context_arc = Arc::new(context);
+        let mut composition_sets = Vec::with_capacity(sets.len());
+        for set_option in sets.into_iter() {
+            let composition_option = if let Some(set) = set_option {
+                let DataSet { ident, buffers } = set;
+                if buffers.len() == 0 {
+                    None
+                } else {
+                    let mut item_list = Vec::with_capacity(buffers.len());
+                    for item in buffers.into_iter() {
+                        item_list.push((item, context_arc.clone()));
                     }
-                    let new_list = item_list.split_off(position);
-                    let new_composition = CompositionSet {
-                        item_list: new_list,
-                        set_index,
-                    };
-                    keyed_vec.push(new_composition);
+                    Some(CompositionSet {
+                        item_list,
+                        set_name: ident,
+                    })
                 }
-                keyed_vec
-            }
-            ShardingMode::Each => self
-                .item_list
+            } else {
+                None
+            };
+            composition_sets.push(composition_option);
+        }
+        composition_sets
+    }
+
+    // This is used on the frontend, to be depricated when we change function registration serialziation
+    // DO NOT ADD USAGE
+    pub fn from_byte_items(items: Vec<(String, Vec<u8>)>) -> Self {
+        CompositionSet {
+            item_list: items
                 .into_iter()
-                .map(|item| CompositionSet {
-                    item_list: vec![item],
-                    set_index: self.set_index,
+                .map(|(name, data)| {
+                    (
+                        DataItem {
+                            ident: name,
+                            data: Position {
+                                offset: 0,
+                                size: data.len(),
+                            },
+                            key: 0,
+                        },
+                        Arc::new(
+                            crate::memory_domain::read_only::ReadOnlyContext::new(
+                                data.into_boxed_slice(),
+                            )
+                            .unwrap(),
+                        ),
+                    )
                 })
                 .collect(),
-        };
-    }
-
-    pub fn combine(&mut self, additional: CompositionSet) -> DandelionResult<()> {
-        let CompositionSet {
-            item_list,
-            set_index,
-        } = additional;
-        if self.set_index != set_index {
-            return Err(DandelionError::Dispatcher(
-                DispatcherError::CompositionCombine,
-            ));
+            // This is only used for static sets from function registration, which will get a name from the metadata
+            set_name: String::new(),
         }
-        self.item_list.extend(item_list.into_iter());
-        self.item_list.sort_unstable_by_key(|a| a.0);
-        return Ok(());
+    }
+
+    pub fn combine(&mut self, additional: CompositionSet) {
+        self.item_list.extend(additional.item_list.into_iter());
+        self.item_list.sort_unstable_by_key(|a| a.0.key);
     }
 }
 
-impl From<(usize, Vec<Arc<Context>>)> for CompositionSet {
-    fn from(pair: (usize, Vec<Arc<Context>>)) -> Self {
-        let (set_index, context_vec) = pair;
-        let mut item_list = Vec::new();
-        for context in context_vec.into_iter() {
-            if let Some(Some(set)) = context.content.get(set_index) {
-                for (item_index, buffer) in set.buffers.iter().enumerate() {
-                    item_list.push((buffer.key, item_index, context.clone()));
-                }
-            }
-        }
-        item_list.sort_unstable_by_key(|a| a.0);
-        return CompositionSet {
-            item_list,
-            set_index,
-        };
-    }
-}
-
-pub struct CompositionSetTransferIterator<'origin> {
-    /// set for which this iterator is implemented
-    set_iterator: std::slice::Iter<'origin, (u32, usize, Arc<Context>)>,
-    set_index: usize,
-}
-
-impl Iterator for CompositionSetTransferIterator<'_> {
-    type Item = (usize, usize, Arc<Context>);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.set_iterator
-            .next()
-            .and_then(|(_, item_index, context)| {
-                Some((self.set_index, *item_index, context.clone()))
-            })
-    }
-}
-
+/// Iterator over a reference of the composition set, not taking ownership
 impl<'origin> IntoIterator for &'origin CompositionSet {
-    type Item = (usize, usize, Arc<Context>);
-    type IntoIter = CompositionSetTransferIterator<'origin>;
+    type Item = &'origin (DataItem, Arc<Context>);
+    type IntoIter = std::slice::Iter<'origin, (DataItem, Arc<Context>)>;
     fn into_iter(self) -> Self::IntoIter {
-        Self::IntoIter {
-            set_iterator: self.item_list.iter(),
-            set_index: self.set_index,
-        }
+        self.item_list.iter()
     }
 }
 
+/// Iterator taking ownership of the Compositon set
+impl IntoIterator for CompositionSet {
+    type Item = (DataItem, Arc<Context>);
+    type IntoIter = std::vec::IntoIter<(DataItem, Arc<Context>)>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.item_list.into_iter()
+    }
+}
+
+/// A more concise display for the composition set that does not print the entire Context contents.
+impl fmt::Display for CompositionSet {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "items: [")?;
+        for (item, ctx) in self.item_list.iter() {
+            write!(
+                f,
+                "(item: {:?}, context: {{ type: {:?}, size: {}, state: {:?} }})",
+                item, ctx.context, ctx.size, ctx.state
+            )?;
+        }
+        write!(f, "]")
+    }
+}
+
+/// Computes the sharding for the given sets following the given join order and join strategies.
+/// The `join_order` vector is expected to be of length `sets.len()`, the `join_strategies` vector
+/// is expected to be of size `sets.len() - 1`.
+///
+/// Based on the any sharding mode the function uses the system information to determine a suitable
+/// number of partitions and then tries to shard `AnyEach` and `AnyKey` sets accordingly if possible.
+/// If an `AnyShardingMode::MaxSharding` is given it will create the maximum possible partitions
+/// (i.e. `AnyKey` becomes `Key` and `AnyEach` becomes `Each`).
+///
+/// The `min_set_size` is used to create `any` set shards of at least that size and is ignored if
+/// set to 0.
 pub fn get_sharding(
     mut sets: Vec<Option<(ShardingMode, CompositionSet)>>,
-    mut join_order: Vec<usize>,
-    mut join_strategies: Vec<JoinStrategy>,
+    join_order: Vec<usize>,
+    join_strategies: Vec<JoinStrategy>,
+    any_sharding_mode: &AnyShardingMode,
+    mut min_set_bytes: Vec<usize>,
 ) -> Vec<Vec<Option<CompositionSet>>> {
     let set_num = sets.len();
-    let mut final_sharding = Vec::new();
+    debug_assert_eq!(join_order.len(), set_num);
+    debug_assert_eq!(
+        join_strategies.len(),
+        if set_num == 0 { 0 } else { set_num - 1 }
+    );
+    min_set_bytes.resize(set_num, 0);
 
+    trace!(
+        "Computing sharding using sets: {:?}, join_order: {:?}, join_strategies: {:?}.",
+        sets,
+        join_order,
+        join_strategies
+    );
+    let mut final_sharding = Vec::new();
     if set_num == 0 {
+        trace!("Found empty sharding.");
         return final_sharding;
     }
 
-    // make sure every set is in the order and has a strategy
-    let mut missing_sets: Vec<_> = (0..set_num).map(|index| Some(index)).collect();
-    for index in join_order.iter() {
-        missing_sets[*index] = None;
+    // first create the iterators for any keyed shardings
+    let mut key_join_iter = None;
+    let mut fixed_partitions = 1;
+    let mut join_group_key_set: Vec<u32> = vec![];
+    let mut i = 0;
+    while i < set_num {
+        let set_idx = join_order[i];
+        if let Some((sharding, set)) = sets[set_idx].take() {
+            if sharding != ShardingMode::Key {
+                if join_group_key_set.len() > 0 {
+                    fixed_partitions *= join_group_key_set.len();
+                    join_group_key_set.clear();
+                }
+                sets[set_idx] = Some((sharding, set)); // put back into sets
+                break; // continue building all other iterators in the second loop
+            }
+
+            let strategy = if i > 0 {
+                join_strategies[i - 1]
+            } else {
+                JoinStrategy::Cross
+            };
+
+            if strategy == JoinStrategy::Cross {
+                if join_group_key_set.len() > 0 {
+                    fixed_partitions *= join_group_key_set.len();
+                    join_group_key_set.clear();
+                }
+            }
+
+            key_join_iter = join_iterator::SetKeyIterator::new(
+                key_join_iter,
+                set,
+                strategy,
+                set_idx,
+                &mut join_group_key_set,
+            );
+        }
+        i += 1;
     }
-    for missing_index in missing_sets {
-        if let Some(missing) = missing_index {
-            join_order.push(missing);
+
+    // second create the iterators for all remaining shardings
+    let mut any_set_groups = Vec::new();
+    let mut join_iter = key_join_iter.map(|i| i as Box<dyn JoinIterator>);
+    while i < set_num {
+        let set_idx = join_order[i];
+        if let Some((sharding, set)) = sets[set_idx].take() {
+            match sharding {
+                ShardingMode::All => {
+                    join_iter = join_iterator::SetAllIterator::new(join_iter, set, set_idx);
+                }
+                ShardingMode::Each => {
+                    let partitions;
+                    (join_iter, partitions) =
+                        join_iterator::SetEachIterator::new(join_iter, set, set_idx);
+                    fixed_partitions *= partitions;
+                }
+                ShardingMode::AnyEach => {
+                    let (any_join_iter, largest_set_size, min_set_size, max_partitions) =
+                        join_iterator::AnyIterator::new(
+                            join_iter,
+                            vec![set],
+                            vec![],
+                            vec![set_idx],
+                            sharding,
+                            &min_set_bytes[i..(i + 1)],
+                        );
+                    if max_partitions > 0 {
+                        any_set_groups.push(AnySetGroup::new(
+                            largest_set_size,
+                            min_set_size,
+                            max_partitions,
+                        ));
+                    }
+                    join_iter = any_join_iter.map(|i| i as Box<dyn JoinIterator>);
+                }
+                ShardingMode::AnyKey => {
+                    // get all sets that are joined together (i.e. find the next cross join)
+                    let mut joined_sets = vec![set];
+                    let mut joined_set_idcs = vec![set_idx];
+                    let mut joined_strategies = vec![];
+                    let start_idx = i;
+                    while i + 1 < join_order.len() {
+                        let next_strategy = join_strategies[i];
+                        if next_strategy != JoinStrategy::Cross {
+                            let next_set_idx = join_order[i + 1];
+                            // if the set is none we just skip it -> this allows for empty optional sets
+                            if let Some((_, set)) = sets[next_set_idx].take() {
+                                joined_sets.push(set);
+                                joined_set_idcs.push(next_set_idx);
+                                joined_strategies.push(next_strategy);
+                            }
+                            i += 1;
+                        } else {
+                            // a cross join breaks the chain
+                            break;
+                        }
+                    }
+
+                    let (any_join_iter, largest_set_size, min_set_size, max_partitions) =
+                        join_iterator::AnyIterator::new(
+                            join_iter,
+                            joined_sets,
+                            joined_strategies,
+                            joined_set_idcs,
+                            sharding,
+                            &min_set_bytes[start_idx..(i + 1)],
+                        );
+                    if max_partitions > 0 {
+                        any_set_groups.push(AnySetGroup::new(
+                            largest_set_size,
+                            min_set_size,
+                            max_partitions,
+                        ));
+                    }
+                    join_iter = any_join_iter.map(|i| i as Box<dyn JoinIterator>);
+                }
+                ShardingMode::Key => {
+                    panic!("Expecting key shardings to preceed all other shardings.");
+                }
+            }
+        }
+        i += 1;
+    }
+
+    // compute the target partitions
+    let target_partitions = match any_sharding_mode {
+        AnyShardingMode::MaxSharding => 0,
+        AnyShardingMode::FixedSharding(n) => *n,
+        AnyShardingMode::AutoSharding(params) => {
+            let mut total_largest_any_set_sizes = 1;
+            let mut total_min_set_sizes = 0;
+            for any_group in any_set_groups.iter() {
+                total_largest_any_set_sizes *= any_group.largest_set_size;
+                total_min_set_sizes += any_group.min_set_bytes;
+            }
+            if total_largest_any_set_sizes == 0 {
+                0
+            } else {
+                // use a minimal set size of at least 1 for this computation
+                let s_min = cmp::max(total_min_set_sizes, 1);
+                let c_local = { *params.sys_info.num_local_cores_watcher.borrow() };
+                let c_remote = params.sys_info.num_remote_cores.load(Ordering::Acquire);
+                if total_largest_any_set_sizes > params.offload_const * s_min * c_local {
+                    log::debug!(
+                        "Any sets using at most local + remote cores = {}",
+                        c_local + c_remote
+                    );
+                    c_local + c_remote
+                } else {
+                    log::debug!("Any sets using at most local cores = {}", c_local);
+                    c_local
+                }
+            }
+        }
+    };
+
+    // compute the partitions for the any shardings
+    if fixed_partitions < target_partitions && !any_set_groups.is_empty() {
+        let mut leftover_partitions = target_partitions / fixed_partitions;
+        loop {
+            // find the best suitable set to parallelize over
+            let mut best_idx = 0;
+            let mut best_dist = 0.0;
+            for (i, any_set_group) in any_set_groups.iter().enumerate() {
+                // check that we have not yet assigned a partitions to this any set
+                if !any_set_group.processed {
+                    let remainder = any_set_group.max_partitions % leftover_partitions;
+                    if remainder == 0 {
+                        best_idx = i;
+                        best_dist = 0.0;
+                        break;
+                    }
+                    let dist = (remainder) as f64 / (any_set_group.max_partitions) as f64;
+                    if best_dist == 0.0 || dist < best_dist {
+                        best_idx = i;
+                        best_dist = dist;
+                    }
+                }
+            }
+
+            // if the best set has fewer elements than the leftover parallelization we continue and
+            // check if we can find another set to parallelize over in addition to the found one
+            if best_dist >= 1.0 {
+                any_set_groups[best_idx].target_partitions =
+                    any_set_groups[best_idx].max_partitions;
+                leftover_partitions /= any_set_groups[best_idx].max_partitions;
+                if leftover_partitions <= 1 {
+                    break;
+                }
+                any_set_groups[best_idx].processed = true;
+            } else {
+                if !any_set_groups[best_idx].processed {
+                    any_set_groups[best_idx].target_partitions =
+                        cmp::min(leftover_partitions, any_set_groups[best_idx].max_partitions);
+                }
+                break;
+            }
         }
     }
-    join_strategies.resize(set_num - 1, JoinStrategy::Cross);
-
-    let mut join_iter_opt = JoinIterator::new(
-        JoinStrategy::Outer,
-        None,
-        sets[join_order[0]].take(),
-        join_order[0],
+    debug!(
+        "Found fixed_partitions: {} and any sets: {:?} (target_partitions: {})",
+        fixed_partitions, any_set_groups, target_partitions,
     );
-    for (set_index, startegy) in join_order[1..].iter().zip_eq(join_strategies) {
-        join_iter_opt =
-            JoinIterator::new(startegy, join_iter_opt, sets[*set_index].take(), *set_index);
+    if target_partitions > 0 {
+        trace!("Using any partitions: {:?}", any_set_groups);
+        if let Some(iter) = join_iter.as_mut() {
+            iter.reduce_any_partitions(any_set_groups);
+        }
     }
 
-    if let Some(mut join_iter) = join_iter_opt {
+    // generate the sharding sets
+    if let Some(mut iter) = join_iter {
         let mut new_sets = Vec::with_capacity(set_num);
         new_sets.resize(set_num, None);
-        join_iter.fill_in(&mut new_sets);
+        iter.fill_in(&mut new_sets);
         final_sharding.push(new_sets);
-        while join_iter.advance() {
+        while iter.advance() {
             let mut advance_sets = Vec::with_capacity(set_num);
             advance_sets.resize(set_num, None);
-            join_iter.fill_in(&mut advance_sets);
+            iter.fill_in(&mut advance_sets);
             final_sharding.push(advance_sets);
         }
     }
 
+    trace!("Computed sharding: {:?}", final_sharding);
     final_sharding
-}
-
-pub struct JoinIterator {
-    left: Option<Box<JoinIterator>>,
-    right: Vec<CompositionSet>,
-    right_index: usize,
-    write_index: usize,
-    mode: JoinStrategy,
-    key: u32,
-}
-
-impl JoinIterator {
-    pub fn new(
-        mode: JoinStrategy,
-        mut left_opt: Option<Box<Self>>,
-        right_opt: Option<(ShardingMode, CompositionSet)>,
-        write_index: usize,
-    ) -> Option<Box<Self>> {
-        if right_opt.is_none() || right_opt.as_ref().unwrap().1.is_empty() {
-            return left_opt;
-        }
-        let (set_mode, set) = right_opt.unwrap();
-        let right = set.shard(set_mode);
-        if right.is_empty() {
-            return left_opt;
-        }
-
-        let mut right_index = 0;
-        let mut key = right[0].item_list[0].0;
-
-        if let Some(left) = &mut left_opt {
-            match mode {
-                JoinStrategy::Inner => {
-                    while right_index < right.len() && key != left.key {
-                        if key < left.key {
-                            right_index += 1;
-                            if right_index < right.len() {
-                                key = right[right_index].item_list[0].0;
-                            }
-                        } else {
-                            if !left.advance() {
-                                right_index = right.len();
-                            }
-                        }
-                    }
-                    if right_index == right.len() {
-                        return None;
-                    }
-                }
-                JoinStrategy::Left => {
-                    while right_index < right.len() && right[right_index].item_list[0].0 < left.key
-                    {
-                        right_index += 1;
-                    }
-                    key = left.key;
-                    if right_index == right.len() {
-                        return left_opt;
-                    }
-                }
-                JoinStrategy::Outer => {
-                    if left.key < key {
-                        key = left.key;
-                    }
-                    // else already has the correct key set
-                }
-                JoinStrategy::Right | JoinStrategy::Cross => (),
-            }
-        // there is not left iterator
-        } else {
-            match mode {
-                JoinStrategy::Inner | JoinStrategy::Left => {
-                    return None;
-                }
-                _ => (),
-            }
-        }
-        Some(Box::new(Self {
-            left: left_opt,
-            right,
-            right_index: 0,
-            write_index,
-            mode,
-            key,
-        }))
-    }
-
-    pub fn fill_in(&mut self, to_fill: &mut Vec<Option<CompositionSet>>) -> bool {
-        let left_filled = if let Some(left) = &mut self.left {
-            left.fill_in(to_fill)
-        } else {
-            false
-        };
-        let right_filled = if self.right_index < self.right.len()
-            && self.key == self.right[self.right_index].item_list[0].0
-        {
-            to_fill[self.write_index] = Some(self.right[self.right_index].clone());
-            true
-        } else {
-            false
-        };
-        left_filled || right_filled
-    }
-
-    pub fn advance(&mut self) -> bool {
-        let right = &mut self.right;
-        if let Some(left) = &mut self.left {
-            match self.mode {
-                JoinStrategy::Inner => {
-                    // advance both at least once for inner
-                    // left is advanced on checking (after checking right can stil be advanced)
-                    // right is advanced after
-                    if self.right_index >= right.len() || !left.advance() {
-                        return false;
-                    }
-                    self.right_index += 1;
-                    self.key = right[self.right_index].item_list[0].0;
-                    loop {
-                        if self.key > left.key {
-                            if !left.advance() {
-                                return false;
-                            }
-                        } else if self.key < left.key {
-                            self.right_index += 1;
-                            if self.right_index < right.len() {
-                                self.key = right[self.right_index].item_list[0].0;
-                            } else {
-                                return false;
-                            }
-                        } else {
-                            return true;
-                        }
-                    }
-                }
-                JoinStrategy::Left => {
-                    // advance left and see if we can match
-                    if left.advance() {
-                        while self.right_index < right.len()
-                            && right[self.right_index].item_list[0].0 < left.key
-                            && self.right_index + 1 < right.len()
-                            && right[self.right_index].item_list[0].0 < left.key
-                        {
-                            self.right_index += 1;
-                        }
-                        // after this they key is guaranteed to be equal to the left key or bigger
-                        // so if the keys match that will be fine for copy in, otherwise this will be skipped
-                        // if the key already equal or bigger, it was not advanced
-                        self.key = left.key;
-                        true
-                    } else {
-                        self.right_index = right.len();
-                        false
-                    }
-                }
-                JoinStrategy::Right => {
-                    if !(self.right_index < right.len()) {
-                        return false;
-                    }
-                    self.right_index += 1;
-                    if self.right_index < right.len() {
-                        self.key = right[self.right_index].item_list[0].0;
-                        while self.key > left.key {
-                            if !left.advance() {
-                                return true;
-                            }
-                        }
-                        true
-                    } else {
-                        false
-                    }
-                }
-                JoinStrategy::Outer => {
-                    // could be that right has no more items to contribute,
-                    // but left still can advance
-                    if !(self.right_index < right.len()) {
-                        if left.advance() {
-                            self.key = left.key;
-                            return true;
-                        } else {
-                            return false;
-                        }
-                    }
-                    // right still has items to contribute, check if both, right or left should be advanced
-                    if left.key == right[self.right_index].item_list[0].0 {
-                        let left_advance = left.advance();
-                        self.right_index += 1;
-                        match (self.right_index < right.len(), left_advance) {
-                            (true, false) => {
-                                self.key = right[self.right_index].item_list[0].0;
-                                true
-                            }
-                            (false, true) => {
-                                self.key = left.key;
-                                true
-                            }
-                            (true, true) => {
-                                let possible_key = right[self.right_index].item_list[0].0;
-                                self.key = if possible_key < left.key {
-                                    possible_key
-                                } else {
-                                    left.key
-                                };
-                                true
-                            }
-                            (false, false) => false,
-                        }
-                    } else {
-                        false
-                    }
-                }
-                JoinStrategy::Cross => {
-                    if self.right_index + 1 < right.len() {
-                        self.right_index += 1;
-                        self.key = right[self.right_index].item_list[0].0;
-                        true
-                    } else if left.advance() {
-                        self.right_index = 0;
-                        self.key = right[0].item_list[0].0;
-                        true
-                    } else {
-                        // set right index to len so we can't accidentally copy something
-                        self.right_index = right.len();
-                        false
-                    }
-                }
-            }
-        } else {
-            if !(self.right_index < right.len()) {
-                return false;
-            }
-            // advancing only makes sense for certain modes here
-            if self.mode == JoinStrategy::Right
-                || self.mode == JoinStrategy::Outer
-                || self.mode == JoinStrategy::Cross
-            {
-                self.right_index += 1;
-                if self.right_index < right.len() {
-                    self.key = right[self.right_index].item_list[0].0;
-                    true
-                } else {
-                    false
-                }
-            } else {
-                panic!("Should never have join iterator with left or inner that has None for the left value");
-            }
-        }
-    }
 }

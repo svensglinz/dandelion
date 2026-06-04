@@ -11,8 +11,10 @@ use crate::{
     DataItem, DataRequirement, DataRequirementList, DataSet, Position,
 };
 use core_affinity;
-use dandelion_commons::{DandelionError, DandelionResult, UserError};
-use kvm_bindings::{kvm_userspace_memory_region, KVM_MAX_CPUID_ENTRIES, KVM_MEM_LOG_DIRTY_PAGES};
+use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, UserError};
+use kvm_bindings::{
+    kvm_clock_data, kvm_userspace_memory_region, KVM_MAX_CPUID_ENTRIES, KVM_MEM_LOG_DIRTY_PAGES,
+};
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use log::debug;
 use nix::sys::mman::{mmap, MapFlags, ProtFlags};
@@ -70,11 +72,18 @@ impl Engine for KvmLoop {
 
         let vm = kvm.create_vm().unwrap();
         let vcpu = vm.create_vcpu(0).unwrap();
+
+        if kvm.check_extension(kvm_ioctls::Cap::TscControl) {
+            vcpu.set_tsc_khz(1_000_000).unwrap();
+        }
+
         #[cfg(target_arch = "x86_64")]
         {
             // enable all features the real cpu has on the vcpu
             let cpuid = kvm.get_supported_cpuid(KVM_MAX_CPUID_ENTRIES).unwrap();
             vcpu.set_cpuid2(&cpuid).unwrap();
+            // check that the clock capability is avalilable, so the clock can be set bevore entry
+            assert!(kvm.check_extension(kvm_ioctls::Cap::KvmclockCtrl));
         }
 
         let state = ResetState::new(&vm, &vcpu);
@@ -94,13 +103,13 @@ impl Engine for KvmLoop {
     ) -> DandelionResult<Context> {
         let elf_config = match config {
             FunctionConfig::ElfConfig(conf) => conf,
-            _ => return Err(DandelionError::ConfigMissmatch),
+            _ => return err_dandelion!(DandelionError::ConfigMissmatch),
         };
         setup_input_structs::<u64, u64>(&mut context, elf_config.system_data_offset, &output_sets)?;
         let min_stack_start = context.get_last_item_end();
         let kvm_context = match &mut context.context {
             ContextType::Kvm(kvm_context) => kvm_context,
-            _ => return Err(DandelionError::ContextMissmatch),
+            _ => return err_dandelion!(DandelionError::ContextMissmatch),
         };
 
         #[cfg(feature = "backend_debug")]
@@ -145,7 +154,7 @@ impl Engine for KvmLoop {
                             NonZeroUsize::new_unchecked(overlay_size),
                             ProtFlags::all(),
                             MapFlags::MAP_PRIVATE | MapFlags::MAP_FIXED,
-                            overlay_kvm_context.fd,
+                            &overlay_kvm_context.fd,
                             file_offset as i64,
                         )
                         .unwrap()
@@ -180,6 +189,9 @@ impl Engine for KvmLoop {
             self.vm.set_user_memory_region(region).unwrap();
         }
 
+        #[cfg(target_arch = "x86_64")]
+        self.vm.set_clock(&mut kvm_clock_data::default()).unwrap();
+
         // initialize vCPU
         let page_fault_metadata = self.state.init_vcpu(
             &self.vcpu,
@@ -198,7 +210,7 @@ impl Engine for KvmLoop {
             stack_start as u64,
         )?;
         if min_stack_start >= stack_start {
-            return Err(DandelionError::UserError(UserError::SmallContext));
+            return err_dandelion!(DandelionError::UserError(UserError::SmallContext));
         }
 
         #[cfg(feature = "backend_debug")]
@@ -245,6 +257,7 @@ impl Engine for KvmLoop {
         let dirty_log = self.vm.get_dirty_log(0, kvm_context.storage.len()).unwrap();
 
         // detach VM memory
+        // check if we need to do this, since we always set a new one, this should not be necessary
         region.memory_size = 0;
         unsafe {
             self.vm.set_user_memory_region(region).unwrap();
@@ -300,6 +313,39 @@ impl Engine for KvmLoop {
         }
 
         read_output_structs::<u64, u64>(&mut context, elf_config.system_data_offset)?;
+        // go through the content and only keep overlay segments that are still used
+        let mut overlay_keep = Vec::new();
+        for set in context.content.iter().filter_map(|set| set.as_ref()) {
+            for item in &set.buffers {
+                let Position { offset, size } = item.data;
+                overlay_keep.push((offset, (offset + size).saturating_sub(1)));
+            }
+        }
+        overlay_keep.sort_unstable_by_key(|(start, _)| *start);
+
+        let kvm_context = match &mut context.context {
+            ContextType::Kvm(context) => context,
+            _ => unreachable!(),
+        };
+        let mut keep_index = 0;
+        kvm_context
+            .overlay
+            .retain(|overlay_end, (overlay_start, _)| {
+                while keep_index < overlay_keep.len() {
+                    let (item_start, item_end) = overlay_keep[keep_index];
+                    match (item_start <= *overlay_end, *overlay_start <= item_end) {
+                        // if there is overlap return true
+                        (true, true) => return true,
+                        // the item starts and ends before the current overlay item, so go to next one
+                        (true, false) => (),
+                        // item starts after the overlay ends, so go to next overlay and throw this one away
+                        (false, _) => return false,
+                    }
+                    keep_index += 1;
+                }
+                false
+            });
+
         return Ok(context);
     }
 }
@@ -310,14 +356,14 @@ impl Driver for KvmDriver {
     fn start_engine(
         &self,
         resource: ComputeResource,
-        queue: Box<dyn EngineWorkQueue + Send>,
+        queue: impl EngineWorkQueue + Send + 'static,
     ) -> DandelionResult<()> {
         let cpu_slot = match resource {
             ComputeResource::CPU(core) => core,
-            _ => return Err(DandelionError::EngineResourceError),
+            _ => return err_dandelion!(DandelionError::EngineResourceError),
         };
         let available_cores = match core_affinity::get_core_ids() {
-            None => return Err(DandelionError::EngineError),
+            None => return err_dandelion!(DandelionError::EngineError),
             Some(cores) => cores,
         };
         if !available_cores
@@ -325,7 +371,7 @@ impl Driver for KvmDriver {
             .find(|x| x.id == usize::from(cpu_slot))
             .is_some()
         {
-            return Err(DandelionError::EngineResourceError);
+            return err_dandelion!(DandelionError::EngineResourceError);
         }
         start_thread::<KvmLoop>(cpu_slot, queue);
         return Ok(());

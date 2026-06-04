@@ -57,7 +57,7 @@ impl Function {
     ) -> DandelionResult<Context> {
         return match &self.config {
             FunctionConfig::ElfConfig(_) => {
-                load_static(domain, self.context.clone(), &self.requirements, ctx_size)
+                load_static(domain, &self.context, &self.requirements, ctx_size)
             }
             FunctionConfig::SysConfig(_) => domain.acquire_context(ctx_size),
         };
@@ -128,9 +128,11 @@ impl FunctionAlternative {
                 return Ok(inner.clone());
             }
         }
-        let driver = self.engine.get_driver();
         recorder.record(dandelion_commons::records::RecordPoint::ParsingStart);
-        let function = Arc::new(driver.parse_function(self.path.clone(), &self.domain)?);
+        let function = Arc::new(
+            self.engine
+                .parse_function(self.path.clone(), &self.domain)?,
+        );
         recorder.record(dandelion_commons::records::RecordPoint::ParsingEnd);
         if caching {
             let mut function_lock = self.function.write().unwrap();

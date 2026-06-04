@@ -7,7 +7,7 @@ use crate::{
 };
 use core::marker::Send;
 use dandelion_commons::{
-    records::RecordPoint, DandelionError, DandelionResult, FunctionRegistryError,
+    err_dandelion, records::RecordPoint, DandelionError, DandelionResult, FunctionRegistryError,
 };
 use std::thread::spawn;
 
@@ -24,7 +24,120 @@ pub trait Engine {
     fn get_engine_type(&self) -> EngineType;
 }
 
-fn run_thread<E: Engine>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
+// Either use a local atomic bool as a waker or a channel if we want blocking
+
+// TODO: make sencond blocking waker
+// functions for the waker
+#[cfg(not(feature = "blocking_queue"))]
+mod waker {
+    use crate::{
+        function_driver::{EngineWorkQueue, WorkToDo},
+        promise::Debt,
+    };
+    use std::{
+        future::Future,
+        sync::atomic::{AtomicBool, Ordering},
+        task::{Poll, RawWaker, RawWakerVTable, Waker},
+    };
+
+    fn waker_clone(data: *const ()) -> RawWaker {
+        RawWaker::new(data, &WAKER_TABLE)
+    }
+
+    fn waker_wake(data: *const ()) {
+        let atomic = unsafe { &*(data as *const AtomicBool) };
+        atomic.store(true, Ordering::Release);
+    }
+
+    unsafe fn waker_wake_by_ref(data: *const ()) {
+        waker_wake(data);
+    }
+
+    unsafe fn waker_drop(_: *const ()) {}
+
+    const WAKER_TABLE: RawWakerVTable =
+        RawWakerVTable::new(waker_clone, waker_wake, waker_wake_by_ref, waker_drop);
+
+    pub(super) fn manual_pull(queue: &mut impl EngineWorkQueue) -> (WorkToDo, Debt) {
+        let mut queue_future = core::pin::pin!(queue.get_engine_args());
+        //
+        let new_atomic = AtomicBool::new(false);
+        let raw_waker = RawWaker::new(new_atomic.as_ptr() as *const (), &WAKER_TABLE);
+        let waker = unsafe { Waker::from_raw(raw_waker) };
+        let mut context = std::task::Context::from_waker(&waker);
+        loop {
+            if let Poll::Ready(work) = queue_future.as_mut().poll(&mut context) {
+                return work;
+            }
+            // means it is still pending, wait for waker to be woken
+            while new_atomic
+                .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                core::hint::spin_loop();
+            }
+        }
+    }
+}
+
+#[cfg(feature = "blocking_queue")]
+mod waker {
+    use crate::{
+        function_driver::{EngineWorkQueue, WorkToDo},
+        promise::Debt,
+    };
+    use std::{
+        future::Future,
+        sync::mpsc::{channel, Sender},
+        task::{Poll, RawWaker, RawWakerVTable, Waker},
+    };
+
+    fn waker_clone(data: *const ()) -> RawWaker {
+        let box_ref = unsafe { Box::from_raw(data as *mut Sender<()>) };
+        let new_sender = box_ref.clone();
+        // don't drop the original box
+        let _ = Box::into_raw(box_ref);
+        RawWaker::new(Box::into_raw(new_sender) as *const (), &WAKER_TABLE)
+    }
+
+    fn waker_wake(data: *const ()) {
+        unsafe {
+            waker_wake_by_ref(data);
+            waker_drop(data);
+        }
+    }
+
+    unsafe fn waker_wake_by_ref(data: *const ()) {
+        let sender_ref = &*(data as *const Sender<()>);
+        sender_ref.send(()).unwrap();
+    }
+
+    unsafe fn waker_drop(data: *const ()) {
+        let _ = Box::from_raw(data as *mut Sender<()>);
+    }
+
+    const WAKER_TABLE: RawWakerVTable =
+        RawWakerVTable::new(waker_clone, waker_wake, waker_wake_by_ref, waker_drop);
+
+    pub(super) fn manual_pull(queue: &mut impl EngineWorkQueue) -> (WorkToDo, Debt) {
+        let mut queue_future = core::pin::pin!(queue.get_engine_args());
+        //
+        let (sender, receiver) = channel::<()>();
+        let sender_box = Box::new(sender);
+        let raw_waker = RawWaker::new(Box::into_raw(sender_box) as *const (), &WAKER_TABLE);
+        let waker = unsafe { Waker::from_raw(raw_waker) };
+        let mut context = std::task::Context::from_waker(&waker);
+        loop {
+            if let Poll::Ready(work) = queue_future.as_mut().poll(&mut context) {
+                return work;
+            }
+            // means it is still pending, wait for waker to be woken
+            receiver.recv().unwrap();
+        }
+    }
+}
+
+fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
     // set core affinity
     if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
         log::error!("core received core id that could not be set");
@@ -33,9 +146,10 @@ fn run_thread<E: Engine>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
     let mut engine_state = E::init(core_id).expect("Failed to initialize thread state");
     'engine: loop {
         // TODO catch unwind so we can always return an error or shut down gracefully
-        let (args, debt) = queue.get_engine_args();
+        let (args, debt) = waker::manual_pull(&mut queue);
         match args {
             WorkToDo::FunctionArguments {
+                function_id: _,
                 function_alternatives,
                 input_sets,
                 metadata,
@@ -50,7 +164,7 @@ fn run_thread<E: Engine>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
                     Some(alt) => alt,
                     None => {
                         drop(recorder);
-                        debt.fulfill(Err(DandelionError::FunctionRegistry(
+                        debt.fulfill(err_dandelion!(DandelionError::FunctionRegistry(
                             FunctionRegistryError::UnknownFunctionAlternative,
                         )));
                         continue;
@@ -96,15 +210,13 @@ fn run_thread<E: Engine>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
 
                     // transfer data into the isolation context (memory) -> Eg function arguments
                     if let Some(transfer_set) = transfer_option {
-                        for (source_set_index, source_item_index, source_context) in transfer_set {
+                        for (source_item, source_context) in transfer_set {
                             let transfer_result = memory_domain::transfer_data_item(
                                 &mut function_context,
                                 source_context,
                                 set_index,
                                 128,
-                                input_set_name.as_str(),
-                                source_set_index,
-                                source_item_index,
+                                source_item,
                             );
 
                             if let Err(transfer_error) = transfer_result {
@@ -137,12 +249,16 @@ fn run_thread<E: Engine>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
             }
             WorkToDo::Shutdown(_) => {
                 debt.fulfill(Ok(WorkDone::Resources(vec![ComputeResource::CPU(core_id)])));
+                queue.remove_self_from_queue();
                 return;
             }
         }
     }
 }
 
-pub fn start_thread<E: Engine>(cpu_slot: u8, queue: Box<dyn EngineWorkQueue + Send>) -> () {
+pub fn start_thread<E: EngineLoop>(
+    cpu_slot: u8,
+    queue: impl EngineWorkQueue + Send + 'static,
+) -> () {
     spawn(move || run_thread::<E>(cpu_slot, queue));
 }

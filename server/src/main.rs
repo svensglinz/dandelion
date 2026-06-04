@@ -1,387 +1,23 @@
-use core_affinity::{self, CoreId};
-use dandelion_commons::{
-    records::{Archive, Recorder},
-    DandelionResult,
-};
-use dandelion_server::DandelionBody;
+use dandelion_commons::records::Archive;
+use dandelion_server::config::{self, FuncMetadata, PreloadFunc};
 use dispatcher::{
     dispatcher::{Dispatcher, DispatcherInput},
+    queue::WorkQueue,
     resource_pool::ResourcePool,
 };
-use http_body_util::BodyExt;
-use hyper::{
-    body::{Body, Incoming},
-    service::service_fn,
-    Request, Response,
-};
-use log::{debug, error, info, trace, warn};
+use log::{debug, error, info, warn};
 use machine_interface::{
-    composition::CompositionSet,
+    composition::{AnyShardingMode, AnyShardingParams, CompositionSet},
     function_driver::{ComputeResource, Metadata},
-    machine_config::{DomainType, EngineType},
-    memory_domain::{bytes_context::BytesContext, read_only::ReadOnlyContext, MemoryResource},
-    DataItem, DataSet, Position,
+    machine_config::{create_engine_resource_map, DomainType, EngineType},
+    memory_domain::MemoryResource,
 };
-use serde::Deserialize;
-use std::{
-    collections::BTreeMap,
-    convert::Infallible,
-    fs::read_to_string,
-    io::Write,
-    net::SocketAddr,
-    path::PathBuf,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc, OnceLock,
-    },
-    time::Instant,
-};
-use tokio::{
-    net::TcpListener,
-    runtime::Builder,
-    select,
-    signal::unix::SignalKind,
-    spawn,
-    sync::{mpsc, oneshot},
-};
+use multinode::DispatcherCommand;
+use nix::unistd::Pid;
+use std::{collections::BTreeMap, fs::read_to_string, sync::OnceLock};
+use tokio::{runtime::Builder, select, spawn, sync::mpsc};
 
-const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
-
-enum DispatcherCommand {
-    FunctionRequest {
-        function_id: Arc<String>,
-        inputs: Vec<DispatcherInput>,
-        is_cold: bool,
-        recorder: Recorder,
-        callback: oneshot::Sender<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
-    },
-    FunctionRegistration {
-        name: String,
-        engine_type: EngineType,
-        context_size: usize,
-        path: String,
-        metadata: Metadata,
-        callback: oneshot::Sender<DandelionResult<()>>,
-    },
-    CompositionRegistration {
-        composition: String,
-        callback: oneshot::Sender<DandelionResult<()>>,
-    },
-    CompositionRequest {
-        composition: String,
-        inputs: Vec<DispatcherInput>,
-        recorder: Recorder,
-        callback: oneshot::Sender<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
-    },
-}
-
-async fn serve_request(
-    is_cold: bool,
-    req: Request<Incoming>,
-    dispatcher: mpsc::Sender<DispatcherCommand>,
-) -> Result<Response<DandelionBody>, Infallible> {
-    debug!("Starting to serve request");
-
-    let start_time = Instant::now();
-
-    // Lauberhorn: Not necessary anymore as we only do UDP for nwo
-    // pull all frames from the network
-    let mut incomming = req.into_body();
-    let mut body_pin = std::pin::Pin::new(&mut incomming);
-    let mut frame_data = Vec::new();
-    let mut total_size = 0usize;
-    loop {
-        if let Some(frame_result) =
-            futures::future::poll_fn(|cx| body_pin.as_mut().poll_frame(cx)).await
-        {
-            let data_frame = frame_result.unwrap().into_data().unwrap();
-            total_size += data_frame.len();
-            frame_data.push(data_frame);
-        } else {
-            if body_pin.is_end_stream() {
-                break;
-            } else {
-                continue;
-            }
-        }
-    }
-
-    // from context from frame bytes
-    let request_context_result = BytesContext::from_bytes_vec(frame_data, total_size).await;
-    if request_context_result.is_err() {
-        warn!("request parsing failed with: {:?}", request_context_result);
-    }
-    // TODO make single enum, so we cannot have the None None or Some Some case
-    // Q: how to know when we want a composition ?
-    let (function_name, composition, request_context) = request_context_result.unwrap();
-    let had_function_name = function_name.is_some();
-    let function_id = Arc::new(function_name.unwrap_or_else(|| String::from("Composition")));
-    let mut recorder = Recorder::new(function_id.clone(), start_time);
-    recorder.record(dandelion_commons::records::RecordPoint::DeserializationEnd);
-    debug!("finished creating request context");
-
-    // TODO match set names to assign sets to composition sets
-    // map sets in the order they are in the request
-    let request_number = request_context.content.len(); // number of arguments we sent (as DataSet here)
-    debug!("Request number of request_context: {}", request_number);
-    let request_arc = Arc::new(request_context);
-    let inputs = (0..request_number)
-        .map(|set_id| {
-            // ???
-            DispatcherInput::Set(CompositionSet::from((set_id, vec![request_arc.clone()])))
-        })
-        .collect::<Vec<_>>();
-
-    // want a 1 to 1 mapping of all outputs the functions gives as long as we don't add user input on what they want
-
-    let (callback, output_recevier) = tokio::sync::oneshot::channel();
-    if had_function_name {
-        dispatcher
-            .send(DispatcherCommand::FunctionRequest {
-                function_id,
-                inputs,
-                is_cold,
-                recorder,
-                callback,
-            })
-            .await
-            .unwrap();
-    } else {
-        dispatcher
-            .send(DispatcherCommand::CompositionRequest {
-                composition: composition
-                    .expect("Did not get a service name nor a composition description in request"),
-                inputs,
-                recorder,
-                callback,
-            })
-            .await
-            .unwrap();
-    }
-    // await the function result from the channel
-    let (function_output, recorder) = output_recevier
-        .await
-        .unwrap()
-        .expect("Should get result from function");
-
-    let response_body: DandelionBody =
-        dandelion_server::DandelionBody::new(function_output, &recorder);
-
-    debug!("finished creating response body");
-    let response = Ok::<_, Infallible>(Response::new(response_body));
-    debug!("finished creating response");
-    #[cfg(feature = "archive")]
-    TRACING_ARCHIVE.get().unwrap().insert_recorder(recorder);
-
-    return response;
-}
-
-fn default_path() -> String {
-    String::new()
-}
-
-/// Struct containing registration information for new function
-#[derive(Debug, Deserialize)]
-struct RegisterFunction {
-    /// String name of the function
-    name: String,
-    /// Default size for context to allocate to execute function
-    context_size: u64,
-    /// Which engine the function should be executed on
-    engine_type: String,
-    /// Optional local path to the binary if it is already on local disc
-    #[serde(default = "default_path")]
-    local_path: String,
-    /// Binary representation of the function, ignored if a local path is given
-    binary: Vec<u8>,
-    /// Metadata for the sets and optionally static items to pass into the function for that set
-    input_sets: Vec<(String, Option<Vec<(String, Vec<u8>)>>)>,
-    /// output set names
-    output_sets: Vec<String>,
-}
-
-async fn register_function(
-    req: Request<Incoming>,
-    dispatcher: mpsc::Sender<DispatcherCommand>,
-) -> Result<Response<DandelionBody>, Infallible> {
-    let bytes = req
-        .collect()
-        .await
-        .expect("Failed to extract body from function registration")
-        .to_bytes();
-    // find first line end character
-    let request_map: RegisterFunction =
-        bson::from_slice(&bytes).expect("Should be able to deserialize request");
-    // if local is present ignore the binary
-    let path_string = if !request_map.local_path.is_empty() {
-        // check that file exists
-        if let Err(err) = std::fs::File::open(&request_map.local_path) {
-            let err_message = format!(
-                "Tried to register function with local path, but failed to open file with error {}",
-                err
-            );
-            return Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
-                err_message.as_bytes().to_vec(),
-            )));
-        };
-        request_map.local_path
-    } else {
-        // write function to file
-        std::fs::create_dir_all(FUNCTION_FOLDER_PATH).unwrap();
-        let mut path_buff = PathBuf::from(FUNCTION_FOLDER_PATH);
-        path_buff.push(request_map.name.clone());
-        let mut function_file = std::fs::File::create(path_buff.clone())
-            .expect("Failed to create file for registering function");
-        function_file
-            .write_all(&request_map.binary)
-            .expect("Failed to write file with content for registering");
-        path_buff.to_str().unwrap().to_string()
-    };
-
-    let engine_type = match request_map.engine_type.as_str() {
-        #[cfg(feature = "mmu")]
-        "Process" => EngineType::Process,
-        #[cfg(feature = "kvm")]
-        "Kvm" => EngineType::Kvm,
-        #[cfg(feature = "cheri")]
-        "Cheri" => EngineType::Cheri,
-        unkown => panic!("Unkown engine type string {}", unkown),
-    };
-    let input_sets = request_map
-        .input_sets
-        .into_iter()
-        .map(|(name, data)| {
-            if let Some(static_data) = data {
-                let data_contexts = static_data
-                    .into_iter()
-                    .map(|(item_name, data_vec)| {
-                        let item_size = data_vec.len();
-                        let mut new_context =
-                            ReadOnlyContext::new(data_vec.into_boxed_slice()).unwrap();
-                        new_context.content.push(Some(DataSet {
-                            ident: name.clone(),
-                            buffers: vec![DataItem {
-                                ident: item_name,
-                                data: Position {
-                                    offset: 0,
-                                    size: item_size,
-                                },
-                                key: 0,
-                            }],
-                        }));
-                        Arc::new(new_context)
-                    })
-                    .collect();
-                let composition_set = CompositionSet::from((0, data_contexts));
-                (name, Some(composition_set))
-            } else {
-                (name, None)
-            }
-        })
-        .collect();
-
-    let (callback, confirmation) = oneshot::channel();
-    let metadata = Metadata {
-        input_sets: input_sets,
-        output_sets: request_map.output_sets,
-    };
-    dispatcher
-        .send(DispatcherCommand::FunctionRegistration {
-            name: request_map.name,
-            engine_type,
-            context_size: request_map.context_size as usize,
-            path: path_string,
-            metadata,
-            callback,
-        })
-        .await
-        .unwrap();
-    confirmation
-        .await
-        .unwrap()
-        .expect("Should be able to insert function");
-    return Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
-        "Function registered".as_bytes().to_vec(),
-    )));
-}
-
-#[derive(Debug, Deserialize)]
-struct RegisterChain {
-    composition: String,
-}
-
-async fn register_composition(
-    req: Request<Incoming>,
-    dispatcher: mpsc::Sender<DispatcherCommand>,
-) -> Result<Response<DandelionBody>, Infallible> {
-    let bytes = req
-        .collect()
-        .await
-        .expect("Failed to extract body from function registration")
-        .to_bytes();
-    // find first line end character
-    let request_map: RegisterChain =
-        bson::from_slice(&bytes).expect("Should be able to deserialize request");
-    let (callback, confirmation) = oneshot::channel();
-    dispatcher
-        .send(DispatcherCommand::CompositionRegistration {
-            composition: request_map.composition,
-            callback,
-        })
-        .await
-        .unwrap();
-    confirmation
-        .await
-        .unwrap()
-        .expect("Should be able to insert composition");
-    return Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
-        "Function registered".as_bytes().to_vec(),
-    )));
-}
-
-async fn serve_stats(_req: Request<Incoming>) -> Result<Response<DandelionBody>, Infallible> {
-    let archive_ref = TRACING_ARCHIVE.get().unwrap();
-    let response = Response::new(DandelionBody::from_vec(
-        archive_ref.get_summary().into_bytes(),
-    ));
-    archive_ref.reset();
-    return Ok::<_, Infallible>(response);
-}
-
-async fn service(
-    req: Request<Incoming>,
-    dispatcher: mpsc::Sender<DispatcherCommand>,
-) -> Result<Response<DandelionBody>, Infallible> {
-    let uri = req.uri().path();
-    match uri {
-        // TODO rename to cold func and hot func, remove matmul, compute, io
-        "/register/function" => register_function(req, dispatcher).await,
-        "/register/composition" => register_composition(req, dispatcher).await,
-        "/cold/matmul"
-        | "/cold/matmulstore"
-        | "/cold/compute"
-        | "/cold/io"
-        | "/cold/chain_scaling"
-        | "/cold/middleware_app"
-        | "/cold/compression_app"
-        | "/cold/python_app" => serve_request(true, req, dispatcher).await,
-        "/hot/matmul"
-        | "/hot/matmulstore"
-        | "/hot/compute"
-        | "/hot/io"
-        | "/hot/chain_scaling"
-        | "/hot/middleware_app"
-        | "/hot/compression_app"
-        | "/hot/python_app" => serve_request(false, req, dispatcher).await,
-        "/stats" => serve_stats(req).await,
-        other_uri => {
-            trace!("Received request on {}", other_uri);
-            Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
-                format!("Hello, Wor\n").into_bytes(),
-            )))
-        }
-    }
-}
+mod frontend;
 
 /// Recording setup
 static TRACING_ARCHIVE: OnceLock<Archive> = OnceLock::new();
@@ -417,6 +53,7 @@ async fn dispatcher_loop(
             DispatcherCommand::CompositionRequest {
                 composition,
                 inputs,
+                is_cold,
                 recorder,
                 mut callback,
             } => {
@@ -424,7 +61,7 @@ async fn dispatcher_loop(
                 let future = dispatcher.queue_unregistered_composition(
                     composition,
                     inputs,
-                    false, // TODO
+                    !is_cold,
                     recorder,
                 );
                 spawn(async {
@@ -461,42 +98,76 @@ async fn dispatcher_loop(
                     .send(insertion_res)
                     .expect("Composition registration callback failed!");
             }
+            DispatcherCommand::RemoteFunctionRequest {
+                function_id,
+                inputs,
+                recorder,
+                mut callback,
+                is_cold,
+            } => {
+                debug!(
+                    "Handling remote function request for function_id={}",
+                    function_id
+                );
+                let dispatcher_input = inputs
+                    .into_iter()
+                    .map(|input_option| {
+                        if let Some(input_set) = input_option {
+                            DispatcherInput::Set(input_set)
+                        } else {
+                            DispatcherInput::None
+                        }
+                    })
+                    .collect();
+                let function_future = dispatcher.queue_function_by_name(
+                    function_id,
+                    dispatcher_input,
+                    !is_cold,
+                    recorder,
+                );
+                spawn(async {
+                    select! {
+                        function_output = function_future => {
+                            // either get an ok, meaning the data was sent, or get the data back
+                            // no need to handle ok, and nothing useful to do with data if we get it back
+                            // drop it here to release resources
+                            let _ = callback.send(function_output);
+                        }
+                        _ = callback.closed() => ()
+                    }
+                });
+            }
         };
     }
 }
 
-async fn service_loop(request_sender: mpsc::Sender<DispatcherCommand>, port: u16) {
+async fn remote_queue_server(queue_port: u16, queue: WorkQueue) {
     // socket to listen to
-    let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port));
-    let listener = TcpListener::bind(addr).await.unwrap();
-    // signal handlers for gracefull shutdown
-    let mut sigterm_stream = tokio::signal::unix::signal(SignalKind::terminate()).unwrap();
-    let mut sigint_stream = tokio::signal::unix::signal(SignalKind::interrupt()).unwrap();
-    let mut sigquit_stream = tokio::signal::unix::signal(SignalKind::quit()).unwrap();
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], queue_port));
+    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+
     loop {
-        tokio::select! {
-            connection_pair = listener.accept() => {
-                let (stream,_) = connection_pair.unwrap();
-                let loop_dispatcher = request_sender.clone();
-                let io = hyper_util::rt::TokioIo::new(stream);
-                tokio::task::spawn(async move {
-                    let service_dispatcher_ptr = loop_dispatcher.clone();
-                    if let Err(err) = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
-                        .serve_connection_with_upgrades(
-                            io,
-                            service_fn(|req| service(req, service_dispatcher_ptr.clone())),
-                        )
-                        .await
-                    {
-                        error!("Request serving failed with error: {:?}", err);
-                    }
-                });
-            }
-            _ = sigterm_stream.recv() => return,
-            _ = sigint_stream.recv() => return,
-            _ = sigquit_stream.recv() => return,
-        }
+        // wait for new connection to arrive
+        let accept_result = listener.accept().await;
+        if let Ok((socket, _address)) = accept_result {
+            spawn(multinode::client::remote_queue_server(
+                socket,
+                queue.clone(),
+            ));
+        } else {
+            // TODO handle errors on incomming request
+            continue;
+        };
     }
+}
+
+async fn remote_queue_client(
+    remote_url: String,
+    sender: mpsc::Sender<DispatcherCommand>,
+    queue: WorkQueue,
+) {
+    let connection = tokio::net::TcpStream::connect(remote_url).await.unwrap();
+    multinode::client::remote_queue_client(connection, sender, queue).await;
 }
 
 fn main() -> () {
@@ -513,11 +184,19 @@ fn main() -> () {
     let config = dandelion_server::config::DandelionConfig::get_config();
     info!("Loaded configuration:\n{:?}", config);
 
+    // create globally available path to folder for data
+    let folder_path: &'static str = Box::leak(config.folder_path.clone().into_boxed_str());
+
     // Initilize metric collection
     match TRACING_ARCHIVE.set(Archive::init()) {
         Ok(_) => (),
         Err(_) => panic!("Failed to initialize tracing archive"),
     }
+
+    // set the reqwest engine concurrency limit if it is available
+    #[cfg(feature = "reqwest_io")]
+    let _ = machine_interface::function_driver::system_driver::reqwest::CONCURRENCY_LIMIT
+        .set(config.io_concurrency);
 
     // find available resources
     let num_phyiscal_cores = u8::try_from(num_cpus::get_physical()).unwrap();
@@ -552,70 +231,45 @@ fn main() -> () {
 
     // make multithreaded front end runtime
     // set up tokio runtime, need io in any case
+    let frontent_core_num = frontend_cores.len();
+    let mut frontend_cpuset = nix::sched::CpuSet::new();
+    for cpu in frontend_cores {
+        frontend_cpuset.set(usize::from(cpu)).unwrap();
+    }
     let mut runtime_builder = Builder::new_multi_thread();
     runtime_builder.enable_io();
-    runtime_builder.worker_threads(frontend_cores.len());
-
-    // Sven: pin each worker thread to a specific core
+    runtime_builder.enable_time();
+    runtime_builder.worker_threads(frontent_core_num);
     runtime_builder.on_thread_start(move || {
-        static ATOMIC_INDEX: AtomicUsize = AtomicUsize::new(0);
-        let core_index = ATOMIC_INDEX.fetch_add(1, Ordering::SeqCst);
-        if !core_affinity::set_for_current(CoreId {
-            id: frontend_cores[core_index].into(),
-        }) {
-            return;
-        }
-        info!(
-            "Frontend thread running on core {}",
-            frontend_cores[core_index]
-        );
+        nix::sched::sched_setaffinity(Pid::from_raw(0), &frontend_cpuset).unwrap()
     });
     runtime_builder.global_queue_interval(10);
     runtime_builder.event_interval(10);
     let runtime = runtime_builder.build().unwrap();
 
-    // Sven: dispatcher will disappear
+    let dispatcher_core_num = dispatcher_cores.len();
+    let mut dispatcher_coreset = nix::sched::CpuSet::new();
+    for cpu in dispatcher_cores {
+        dispatcher_coreset.set(usize::from(cpu)).unwrap();
+    }
     let dispatcher_runtime = Builder::new_multi_thread()
-        .worker_threads(dispatcher_cores.len())
+        .worker_threads(dispatcher_core_num)
         .on_thread_start(move || {
-            static ATOMIC_INDEX: AtomicUsize = AtomicUsize::new(0);
-            let core_index = ATOMIC_INDEX.fetch_add(1, Ordering::SeqCst);
-            if !core_affinity::set_for_current(CoreId {
-                id: dispatcher_cores[core_index].into(),
-            }) {
-                return;
-            }
-            info!(
-                "Dispatcher thread running on core {}",
-                dispatcher_cores[core_index]
-            );
+            nix::sched::sched_setaffinity(Pid::from_raw(0), &dispatcher_coreset).unwrap()
         })
         .build()
         .unwrap();
     let (dispatcher_sender, dispatcher_recevier) = mpsc::channel(1000);
 
     // set up dispatcher configuration basics
-    let mut pool_map = BTreeMap::new();
-
-    // insert engines for the currentyl selected compute engine type
-    // todo add function to machine config to detect resources and auto generate this
-    #[cfg(feature = "mmu")]
-    let engine_type = EngineType::Process;
-    #[cfg(feature = "kvm")]
-    let engine_type = EngineType::Kvm;
-    #[cfg(feature = "cheri")]
-    let engine_type = EngineType::Cheri;
-    #[cfg(any(feature = "cheri", feature = "mmu", feature = "kvm"))]
-    pool_map.insert(engine_type, compute_cores);
-    #[cfg(feature = "reqwest_io")]
-    pool_map.insert(EngineType::Reqwest, communication_cores);
+    let pool_map = create_engine_resource_map(compute_cores, communication_cores);
     let resource_pool = ResourcePool {
         engine_pool: futures::lock::Mutex::new(pool_map),
     };
 
     // get RAM size
-    // TODO could be a configuration, open question on how to split between engines
-    // or if we unify somehow and have one underlying pool
+    // TODO: open question on how to split between engines or if we unify somehow and have one
+    // underlying pool.
     let max_ram = read_to_string("/proc/meminfo")
         .unwrap()
         .lines()
@@ -626,43 +280,85 @@ fn main() -> () {
         })
         .unwrap()
         .unwrap()
-        * 1024;
+        * 1024
+        * config.virtual_max_ram_multiplier;
 
-    let memory_pool = BTreeMap::from([
-        #[cfg(feature = "cheri")]
-        (
-            DomainType::Cheri,
-            MemoryResource::Anonymous { size: max_ram },
-        ),
-        #[cfg(feature = "kvm")]
-        (DomainType::Kvm, MemoryResource::Anonymous { size: max_ram }),
-        #[cfg(feature = "mmu")]
-        (
-            DomainType::Process,
-            MemoryResource::Shared {
-                id: 0,
-                size: max_ram,
-            },
-        ),
-    ]);
+    let memory_pool = match config.test_mode {
+        Some(dandelion_server::config::TestMode::NoEngine) => BTreeMap::new(),
+        Some(_) | None => BTreeMap::from([
+            #[cfg(feature = "cheri")]
+            (
+                DomainType::Cheri,
+                MemoryResource::Anonymous { size: max_ram },
+            ),
+            #[cfg(feature = "kvm")]
+            (DomainType::Kvm, MemoryResource::Anonymous { size: max_ram }),
+            #[cfg(feature = "mmu")]
+            (
+                DomainType::Process,
+                MemoryResource::Shared {
+                    id: 0,
+                    size: max_ram,
+                },
+            ),
+        ]),
+    };
 
-    // Create an ARC pointer to the dispatcher for thread-safe access
+    let work_queue = WorkQueue::init();
+
+    // define the any sharding mode
+    info!("Using any sharding mode: {:?}", config.any_sharding_mode);
+    let any_sharding_mode = match config.any_sharding_mode {
+        config::AnyShardingMode::MaxSharding => AnyShardingMode::MaxSharding,
+        config::AnyShardingMode::FixedSharding(n) => AnyShardingMode::FixedSharding(n),
+        config::AnyShardingMode::AutoSharding(n) => {
+            AnyShardingMode::AutoSharding(AnyShardingParams {
+                sys_info: work_queue.system_info.clone(),
+                offload_const: n,
+            })
+        }
+    };
+
     let dispatcher = Box::leak(Box::new(
-        Dispatcher::init(resource_pool, memory_pool).expect("Should be able to start dispatcher"),
+        Dispatcher::init(
+            resource_pool,
+            memory_pool,
+            work_queue.clone(),
+            any_sharding_mode,
+        )
+        .expect("Should be able to start dispatcher"),
     ));
+
     // start dispatcher
     dispatcher_runtime.spawn(dispatcher_loop(dispatcher_recevier, dispatcher));
 
     // register preload functions
-    let preload_func = config.get_preload_functions();
-    if preload_func.len() > 0 {
-        Builder::new_multi_thread()
-            .enable_all()
+    let (preload_functions, preload_compositions) = config.get_preload_functions();
+    debug!(
+        "Preloading {} functions and {} compositions",
+        preload_functions.len(),
+        preload_compositions.len()
+    );
+    if preload_functions.len() > 0 {
+        Builder::new_current_thread()
             .build()
             .unwrap()
             .block_on(async {
-                for pf in preload_func.iter() {
-                    let engine_type = match pf.engine_type_id.to_lowercase().as_str() {
+                for pf in preload_functions.into_iter() {
+                    let PreloadFunc {
+                        name,
+                        engine_type_id,
+                        metadata:
+                            FuncMetadata {
+                                input_sets,
+                                output_sets,
+                                min_set_bytes,
+                            },
+                        ctx_size,
+                        bin_path,
+                    } = pf;
+                    debug!("Inserting preload function: {}", name);
+                    let engine_type = match engine_type_id.to_lowercase().as_str() {
                         #[cfg(feature = "mmu")]
                         "process" => EngineType::Process,
                         #[cfg(feature = "kvm")]
@@ -672,31 +368,41 @@ fn main() -> () {
                         _ => {
                             error!(
                                 "Failed to preload function {}: Unkown engine type string {}",
-                                pf.name, pf.engine_type_id
+                                name, engine_type_id
                             );
                             continue;
                         }
                     };
-                    let input_sets: Vec<(String, Option<CompositionSet>)> = pf
-                        .metadata
-                        .input_sets
-                        .iter()
-                        .map(|s| (s.clone(), None))
-                        .collect();
-                    let output_sets = pf.metadata.output_sets.clone();
+
+                    let input_sets: Vec<(String, Option<CompositionSet>)> =
+                        input_sets.into_iter().map(|s| (s, None)).collect();
                     let metadata = Metadata {
-                        input_sets: input_sets,
-                        output_sets: output_sets,
+                        input_sets,
+                        output_sets,
+                        min_set_bytes,
                     };
                     match dispatcher.insert_function(
-                        pf.name.clone(),
+                        name.clone(),
                         engine_type,
-                        pf.ctx_size,
-                        pf.bin_path.clone(),
+                        ctx_size,
+                        bin_path.clone(),
                         metadata,
                     ) {
-                        Err(err) => warn!("Failed to preload function {}: {}", pf.name, err),
-                        Ok(_) => info!("Inserted preload function {}", pf.name),
+                        Err(err) => warn!("Failed to preload function {}: {}", name, err),
+                        Ok(_) => info!("Inserted preload function {}", name),
+                    }
+                }
+            });
+    }
+    if preload_compositions.len() > 0 {
+        Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(async {
+                for preload_composition in preload_compositions.into_iter() {
+                    match dispatcher.insert_compositions(preload_composition) {
+                        Err(err) => warn!("Failed to preload composition {}", err),
+                        Ok(()) => info!("Inserted preload composition"),
                     }
                 }
             });
@@ -718,11 +424,27 @@ fn main() -> () {
     print!(" timestamp");
     print!("\n");
 
+    // listen for other nodes trying to poll from local work queue
+    runtime.spawn(remote_queue_server(config.q_port, work_queue.clone()));
+
+    // start a thread to check if we should be checking remote queues
+    if let Some(remote_url) = config.remote_queue_url {
+        runtime.spawn(remote_queue_client(
+            remote_url,
+            dispatcher_sender.clone(),
+            work_queue,
+        ));
+    }
+
     // Run this server for... forever... unless I receive a signal!
-    runtime.block_on(service_loop(dispatcher_sender, config.port));
+    runtime.block_on(frontend::service_loop(
+        dispatcher_sender,
+        folder_path,
+        config.port,
+    ));
 
     // clean up folder in tmp that is used for function storage
-    let removal_error = std::fs::remove_dir_all(FUNCTION_FOLDER_PATH);
+    let removal_error = std::fs::remove_dir_all(folder_path);
     if let Err(err) = removal_error {
         warn!("Removing function folder failed with: {}", err);
     }

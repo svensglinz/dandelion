@@ -1,4 +1,4 @@
-use dandelion_commons::{DandelionError, DandelionResult};
+use dandelion_commons::{err_dandelion, DandelionError, DandelionResult};
 use kvm_bindings::{kvm_fpu, kvm_regs, kvm_segment, kvm_sregs, kvm_xcrs};
 use kvm_ioctls::{VcpuFd, VmFd};
 use log::{debug, trace};
@@ -47,6 +47,12 @@ const XCR0_AVX512: u64 = 1 << 5 | 1 << 6 | 1 << 7;
 const EFER_LME: u64 = 1 << 8;
 /// Long Mode Active
 const EFER_LMA: u64 = 1 << 10;
+
+// FPU control word bits
+const FPU_EXCEPTION_MASK_PRECISION: u16 = 1 << 5;
+const FPU_PRECISION_CONTROL_FILED: u16 = 3 << 8;
+// MMX control bits
+const MMX_EXCEPTION_MASK_PRECISION: u32 = 1 << 12;
 
 // 64-bit page directory entry bits
 /// Present
@@ -183,7 +189,12 @@ impl ResetState {
             ..Default::default()
         })
         .unwrap();
-        vcpu.set_fpu(&kvm_fpu::default()).unwrap();
+        vcpu.set_fpu(&kvm_fpu {
+            fcw: FPU_PRECISION_CONTROL_FILED | FPU_EXCEPTION_MASK_PRECISION,
+            mxcsr: MMX_EXCEPTION_MASK_PRECISION,
+            ..Default::default()
+        })
+        .unwrap();
         Ok(page_fault_metadata)
     }
 }
@@ -528,7 +539,7 @@ fn set_page_table(
         debug_assert_ne!(0, present_pages[0].0 >> PAGE_SHIFT);
         if let Some((_, virtual_end, _)) = present_pages.last() {
             if stack_start <= *virtual_end {
-                return Err(DandelionError::ContextFull);
+                return err_dandelion!(DandelionError::ContextFull);
             }
         }
     }
@@ -974,9 +985,9 @@ fn setup_long_mode(sregs: &mut kvm_sregs, xregs: &mut kvm_xcrs) {
     };
 }
 
-pub fn dump_regs(_vcpu: &VcpuFd) {
+pub fn dump_regs(vcpu: &VcpuFd) {
     {
-        let regs = _vcpu.get_regs().unwrap();
+        let regs = vcpu.get_regs().unwrap();
         trace!("Register state: ");
         trace!(
             "rax:\t{:>#10x}, rbx:\t{:>#10x}, rcx:\t{:>#10x}, rdx:\t{:>#10x}",
@@ -1008,7 +1019,7 @@ pub fn dump_regs(_vcpu: &VcpuFd) {
         );
         trace!("rip:\t{:>#10x}, rflags:\t{:>#10x}", regs.rip, regs.rflags,);
 
-        let sregs = _vcpu.get_sregs().unwrap();
+        let sregs = vcpu.get_sregs().unwrap();
         trace!("System registers");
         trace!("cs:\t{:?}", sregs.cs);
         trace!("ss:\t{:?}", sregs.ss);
@@ -1035,7 +1046,23 @@ pub fn dump_regs(_vcpu: &VcpuFd) {
         );
         trace!("interrupt_bitmap: {:?}", sregs.interrupt_bitmap);
 
-        let events = _vcpu.get_vcpu_events().unwrap();
+        let events = vcpu.get_vcpu_events().unwrap();
         trace!("events: {:?}\n", events);
+        let fpu_state = vcpu.get_fpu().unwrap();
+        trace!("fpr: {:?}", fpu_state.fpr);
+        trace!(
+            "fcw:\t{:?}, fsw:\t{:?}, ftwx:\t{:?}",
+            fpu_state.fcw,
+            fpu_state.fsw,
+            fpu_state.ftwx
+        );
+        trace!(
+            "last_opcode: {:?}, last_ip: {:?}, last_dp:{:?}",
+            fpu_state.last_opcode,
+            fpu_state.last_ip,
+            fpu_state.last_dp
+        );
+        trace!("xmm: {:?}", fpu_state.xmm);
+        trace!("mxcsr: {:?}", fpu_state.mxcsr);
     }
 }

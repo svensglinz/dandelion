@@ -5,6 +5,7 @@ use crate::{
 };
 use core::pin::Pin;
 use dandelion_commons::{
+    err_dandelion,
     records::{RecordPoint, Recorder},
     DandelionError, DandelionResult, DispatcherError, FunctionId,
 };
@@ -21,7 +22,8 @@ use log::{debug, trace};
 use machine_interface::memory_domain::ContextTrait;
 use machine_interface::{
     composition::{
-        get_sharding, Composition, CompositionSet, InputSetDescriptor, JoinStrategy, ShardingMode,
+        get_sharding, AnyShardingMode, Composition, CompositionSet, InputSetDescriptor,
+        JoinStrategy, ShardingMode,
     },
     function_driver::{Metadata, WorkToDo},
     machine_config::{get_available_domains, DomainType, EngineType, IntoEnumIterator},
@@ -35,33 +37,35 @@ pub enum DispatcherInput {
     Set(CompositionSet),
 }
 
-const MAX_QUEUE: usize = 4096;
-
 // TODO also here and in registry replace Arc Box with static references from leaked boxes for things we expect to be there for
 // the entire execution time anyway
 pub struct Dispatcher {
     function_registry: FunctionRegistry,
     work_queue: WorkQueue,
     domains: Vec<Arc<Box<dyn MemoryDomain>>>,
+    any_sharding_mode: AnyShardingMode,
 }
 
 impl Dispatcher {
     pub fn init(
         mut resource_pool: ResourcePool,
         memory_resources: BTreeMap<DomainType, MemoryResource>,
-    ) -> DandelionResult<Dispatcher> {
+        work_queue: WorkQueue,
+        any_sharding_mode: AnyShardingMode,
+    ) -> DandelionResult<Self> {
         // get machine specific configurations
         let domains = get_available_domains(memory_resources);
 
-        // TODO: get size from config?
-        let work_queue = WorkQueue::init(MAX_QUEUE);
-
         // create an engine queue wrapper of the work queue for each engine and use up all engine resource available
         for engine_type in EngineType::iter() {
-            let engine_queue = Box::new(EngineQueue::init(work_queue.clone(), engine_type));
-            let driver = engine_type.get_driver();
+            let engine_queue = EngineQueue::init(work_queue.clone(), engine_type);
             while let Ok(Some(resource)) = resource_pool.sync_acquire_engine_resource(engine_type) {
-                driver.start_engine(resource, engine_queue.clone())?;
+                engine_type.start_engine(resource, engine_queue.clone())?;
+                #[cfg(feature = "reqwest_io")]
+                if engine_type == EngineType::Reqwest {
+                    continue;
+                }
+                work_queue.add_local_cores(1);
             }
         }
 
@@ -72,6 +76,7 @@ impl Dispatcher {
             function_registry,
             work_queue,
             domains,
+            any_sharding_mode,
         });
     }
 
@@ -145,7 +150,7 @@ impl Dispatcher {
                 "Expected exactly one composition got {}",
                 composition_meta_pairs.len()
             );
-            return Err(DandelionError::Dispatcher(
+            return err_dandelion!(DandelionError::Dispatcher(
                 DispatcherError::InvalidComposition,
             ));
         }
@@ -234,10 +239,8 @@ impl Dispatcher {
                     {
                         // SVEN: we need this composition_id and it was actually provided in the inputs!
                         if let Some(comp_set) = inputs.get(*composition_id) {
-                            // this means the a non optional set is empty, so we can skip it and directly queue all outputs are ready none
-                            if !*optional
-                                && (comp_set.is_none() || comp_set.as_ref().unwrap().is_empty())
-                            {
+                            // this means the a non optional set None, so we can skip it and directly queue all outputs are ready None
+                            if !*optional && comp_set.is_none() {
                                 let new_sets = deps
                                     .output_set_ids
                                     .iter()
@@ -250,6 +253,11 @@ impl Dispatcher {
                             }
                             // SVEN: move composition set into ready inputs (and associate sharding mode with it)
                             if let Some(set) = comp_set {
+                                debug_assert_ne!(
+                                    0,
+                                    set.len(),
+                                    "Expect sets that are some to have at least one item"
+                                );
                                 ready_inputs[function_index] = Some((*sharding, set.clone()));
                             }
                         } else {
@@ -313,10 +321,10 @@ impl Dispatcher {
                             )
                             .map(|((comp_index, function_index), (mode, optional))| {
                                 // if it was not optional skip executing and push all output sets
-                                if !optional
-                                    && (composition_set_option.is_none()
-                                        || composition_set_option.as_ref().unwrap().is_empty())
-                                {
+                                // TODO: for left, right and outer joins, some sets may also be pseuto optional.
+                                // (i.e. an empty left set on a right join can still have functions that should run)
+                                // Fix either by adding attributes to easily check here or move to check optional together with sharding.
+                                if !optional && composition_set_option.is_none() {
                                     let new_sets = args
                                         .output_mapping
                                         .iter()
@@ -328,9 +336,15 @@ impl Dispatcher {
                                         .push(Either::Left(ready(Ok((new_sets, Vec::new())))));
                                     None
                                 } else {
-                                    args.inptut_sets[*function_index] = composition_set_option
-                                        .clone()
-                                        .and_then(|set| Some((*mode, set)));
+                                    args.inptut_sets[*function_index] =
+                                        composition_set_option.clone().and_then(|set| {
+                                            debug_assert_ne!(
+                                                0,
+                                                set.len(),
+                                                "Expect at least 1 item in composition set"
+                                            );
+                                            Some((*mode, set))
+                                        });
                                     Some((*comp_index, *function_index))
                                 }
                             })
@@ -393,12 +407,20 @@ impl Dispatcher {
 
         // check if there are no input sets or all of them are none, then don't need sharding,
         // but still want to run if we queued it.
-        let is_sharded = input_sets.len() != 0
-            && input_sets
-                .iter()
-                .any(|opt| opt.is_some() && !opt.as_ref().unwrap().1.is_empty());
+        let is_sharded = input_sets.len() != 0 && input_sets.iter().any(|opt| opt.is_some());
         let composition_results: DandelionResult<Vec<_>> = if is_sharded {
-            let sharded = get_sharding(input_sets, join_order, join_strategies);
+            let min_set_bytes = self
+                .function_registry
+                .get_metadata(&function_id)?
+                .min_set_bytes
+                .clone();
+            let sharded = get_sharding(
+                input_sets,
+                join_order,
+                join_strategies,
+                &self.any_sharding_mode,
+                min_set_bytes,
+            );
             let size_hint = sharded.len();
             recorders = Vec::with_capacity(size_hint);
             let resutls: Vec<_> = sharded
@@ -446,11 +468,7 @@ impl Dispatcher {
                         (insert @ None, Some(set)) => {
                             *insert = Some(set);
                         }
-                        (Some(old_set), Some(new_set)) => {
-                            old_set
-                                .combine(new_set)
-                                .expect("Should always be possible to combine");
-                        }
+                        (Some(old_set), Some(new_set)) => old_set.combine(new_set),
                     }
                 }
                 accumulator
@@ -514,6 +532,7 @@ impl Dispatcher {
 
                     let subrecoder = recorder.get_sub_recorder();
                     let args = WorkToDo::FunctionArguments {
+                        function_id: function_id.clone(),
                         function_alternatives,
                         input_sets,
                         metadata,
@@ -534,7 +553,8 @@ impl Dispatcher {
                                     let mut stderr_output: Vec<u8> = vec![0; itm.data.size];
                                     context.context.read(itm.data.offset, &mut stderr_output)?;
                                     warn!(
-                                        "Function result contains stderr output:\n{}",
+                                        "Function '{}' result contains stderr output:\n{}",
+                                        function_id,
                                         std::str::from_utf8(stderr_output.as_slice())
                                             .expect("Invalid stderr buffer")
                                     );
@@ -543,7 +563,8 @@ impl Dispatcher {
                                     let mut stdout_output: Vec<u8> = vec![0; itm.data.size];
                                     context.context.read(itm.data.offset, &mut stdout_output)?;
                                     debug!(
-                                        "Function output:\n{}",
+                                        "Function '{}' output:\n{}",
+                                        function_id,
                                         std::str::from_utf8(stdout_output.as_slice())
                                             .expect("Invalid stdout buffer")
                                     );
@@ -552,23 +573,7 @@ impl Dispatcher {
                         }
                     }
 
-                    // somehow order function return stuff and return to the caller
-                    let context_arc = Arc::new(context);
-                    let composition_sets = context_arc
-                        .content
-                        .iter()
-                        .enumerate()
-                        .map(|(function_set_id, data_option)| {
-                            data_option.as_ref().and_then(|_| {
-                                Some(CompositionSet::from((
-                                    function_set_id,
-                                    vec![context_arc.clone()],
-                                )))
-                            })
-                        })
-                        .collect();
-
-                    return Ok(composition_sets);
+                    return Ok(CompositionSet::from_context(context));
                 }
                 FunctionType::Composition(comp_info) => {
                     return self

@@ -12,7 +12,7 @@ pub mod read_only;
 pub(crate) mod system_domain;
 
 use crate::{DataItem, DataSet, Position};
-use dandelion_commons::{DandelionError, DandelionResult};
+use dandelion_commons::{err_dandelion, DandelionError, DandelionResult};
 use std::sync::Arc;
 
 pub trait ContextTrait: Send + Sync {
@@ -173,7 +173,7 @@ impl Context {
     /// Make sure all space between offset and size is marked as occupied, ignoring overlap with previous occupation
     pub fn occupy_space(&mut self, offset: usize, size: usize) -> DandelionResult<()> {
         if offset + size > self.size {
-            return Err(DandelionError::InvalidWrite);
+            return err_dandelion!(DandelionError::InvalidWrite);
         }
         let insertion_index = self
             .occupation
@@ -209,7 +209,7 @@ impl Context {
             }
         }
         if self.size + 1 == space_size {
-            return Err(DandelionError::ContextFull);
+            return err_dandelion!(DandelionError::ContextFull);
         }
         self.insert(index, start_address, size);
         return Ok(start_address);
@@ -255,7 +255,7 @@ pub trait MemoryDomain: Sync + Send {
 // Code to specialize transfers between different domains
 pub fn transfer_memory(
     destination: &mut Context,
-    source: Arc<Context>,
+    source: &Arc<Context>,
     destination_offset: usize,
     source_offset: usize,
     size: usize,
@@ -339,34 +339,15 @@ pub fn transfer_memory(
 }
 
 /// Transfer a data item from one context to another.
-/// If the destination does not yet have a set at the index,
-/// a new one is created using the set name given.
+/// Assumes the destination set does already exist
 pub fn transfer_data_item(
     destination: &mut Context,
-    source: Arc<Context>,
+    source: &Arc<Context>,
     destination_set_index: usize,
     destination_allignment: usize,
-    destination_set_name: &str,
-    source_set_index: usize,
-    source_item_index: usize,
+    source_item: &DataItem,
 ) -> DandelionResult<()> {
-    // check if source has item
-    if source.content.len() <= source_set_index {
-        return Err(DandelionError::TransferInputNoSetAvailable);
-    }
-    let source_set = source.content[source_set_index]
-        .as_ref()
-        .ok_or(DandelionError::EmptyDataSet)?;
-    if source_set.buffers.len() <= source_item_index {
-        return Err(DandelionError::TransferInputNoSetAvailable);
-    }
-
-    if destination.content.len() <= destination_set_index {
-        destination
-            .content
-            .resize_with(destination_set_index + 1, || None)
-    }
-    let source_item = &source_set.buffers[source_item_index];
+    assert!(destination_set_index < destination.content.len());
 
     log::debug!(
         "Transfering data item from {:?} into context with occupation: {:?}",
@@ -403,12 +384,7 @@ pub fn transfer_data_item(
     );
 
     {
-        let destination_set =
-            &mut destination.content[destination_set_index].get_or_insert(DataSet {
-                ident: destination_set_name.to_string(),
-                buffers: vec![],
-            });
-
+        let destination_set = destination.content[destination_set_index].as_mut().unwrap();
         destination_set.buffers.push(DataItem {
             ident: source_item.ident.clone(),
             data: Position {
@@ -417,14 +393,13 @@ pub fn transfer_data_item(
             },
             key: source_item.key,
         });
-    }
 
-    log::trace!(
-        "transfering item {} from set {} to set {}",
-        source_item.ident,
-        source_set.ident,
-        destination_set_name
-    );
+        log::trace!(
+            "transfering item {} to set {}",
+            source_item.ident,
+            destination_set.ident
+        );
+    }
 
     let source_offset = source_item.data.offset;
     let source_size = source_item.data.size;
@@ -434,8 +409,7 @@ pub fn transfer_data_item(
         destination_offset,
         source_offset,
         source_size,
-    )?;
-    Ok(())
+    )
 }
 
 #[cfg(any(test, feature = "test_export"))]
