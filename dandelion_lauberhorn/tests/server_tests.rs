@@ -59,11 +59,11 @@ let composition = r#"
     function matmul_x86 (mat_in) => (mat_out);
     composition matmac_chain (mat_set_A, mat_set_B, mat_set_C) => (mat_set_out) {
         matmac_x86 (mat_A = keyed mat_set_A, mat_B = keyed mat_set_B, mat_C = keyed mat_set_C) 
-        => (mat_set_tmp = mat_out) by mat_A left mat_B left mat_C;
+        => (mat_set_tmp = mat_out) by mat_A inner mat_B inner mat_C;
         matmul_x86(mat_in = each mat_set_tmp) => (mat_set_out = mat_out);
+
     }
 "#;
-
     // 1. register composition
     let chain_request = RegisterChain {
         composition: composition.to_string(),
@@ -91,20 +91,33 @@ let composition = r#"
     .flat_map(|x| x.to_le_bytes())
     .collect();
 
+    let matrix_b: Vec<u8> = vec![
+        2i64,      // two rows
+        1, 2,   // row 1
+        3, 4    // row 2
+    ].iter()
+    .flat_map(|x| x.to_le_bytes())
+    .collect();
+
+    let matrix_c: Vec<u8> = vec![
+        2i64,      // two rows
+        5, 6,   // row 1
+        7, 8    // row 2
+    ].iter()
+    .flat_map(|x| x.to_le_bytes())
+    .collect();
+
+    let matrices = vec![matrix_a, matrix_b, matrix_c];
+
     // 3. invoke composition 
     let mut input_items = Vec::new();
     for i in 0..3 {
         input_items.push(InputItem {
             identifier: String::from(""),
             key: i,
-            data: matrix_a.clone()
+            data: matrices[i as usize].clone()
         });
     }
-
-    let input_set = InputSet{
-        identifier: String::from(""),
-        items: input_items.clone(),
-    };
    
    let set_names = ["mat_set_A", "mat_set_B", "mat_set_C"];
     let request: Vec<InputSet> = set_names.iter().map(|&name| {
@@ -114,19 +127,30 @@ let composition = r#"
         }
     }).collect();
 
-   let dan_request = DandelionRequest {
-        name: "matmac_chain".into(),
-        sets: request.clone(),
-     };
+    println!("Response from call_function: {:?}", res);
 
-     // Todo(@Sven): pass timeout as parameter
-     let res = call_function("http://localhost:6000/cold/compute", &dan_request);
-     println!("Response from call_function: {:?}", res);
-     // let res =
-     //     invoke_service("matmac_chain", 1, 1, 1, "
-    // let res =
-    //     invoke_service("matmac_chain", 1, 1, 1, "10.0.0.5", 12345, request);
-    //     println!("Composition invocation response: {:?}", res);
+    let res =
+        invoke_service("matmac_chain", 1, 1, 1, "10.0.0.5", 12345, request)
+        .expect("invoke service failed");
+        println!("Composition invocation response: {:?}", res);
+
+    assert!(res.sets.len() == 1, "Expected one output set");
+    assert!(res.sets[0].items.len() == 3, "Expected three output items in the output set");
+
+    let expected_options = vec![
+            vec![2, 18, 18, 18, 18],   // row 1
+            vec![2, 208, 456, 456, 1000],   // row 2
+            vec![2, 12240, 16632, 16632, 22600],   // row 3
+    ];
+
+    for set in &res.sets[0].items {
+        let output_data = set.data
+        .chunks(8)
+        .map(|chunk| i64::from_le_bytes(chunk.try_into().unwrap()))
+        .collect::<Vec<i64>>();
+        println!("Output data: {:?}", output_data);
+        assert!(expected_options.contains(&output_data), "Unexpected output data");
+    }
 }
 
 #[test]
