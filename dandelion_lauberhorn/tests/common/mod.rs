@@ -4,9 +4,23 @@ use std::time::Duration;
 use dandelion_lauberhorn::lauberhorn::marshal::{DandelionRPCResponse, InputSets, RpcDecode, RpcEncode};
 use dandelion_lauberhorn::lauberhorn::{marshal::DandelionRPCRequest};
 use reqwest::blocking::{Client, Response};
-use dandelion_lauberhorn::webserver::schemas::{InputSet, RegisterChain, RegisterFunction, RegisterService};
+use dandelion_lauberhorn::webserver::schemas::{DandelionDeserializeResponse, DandelionRequest, InputSet, RegisterChain, RegisterFunction, RegisterService};
 use bson::ser::to_vec;
 use dandelion_lauberhorn::utils::oncrpc;
+
+pub fn call_function(url: &str, obj: &DandelionRequest) -> Result<DandelionDeserializeResponse, ()> {
+    let client = Client::new();
+    let body = to_vec(obj).expect("BSON serialization failed");
+    let res = client
+        .post(url)
+        .header("content-type", "application/octet-stream")
+        .body(body)
+        .send()
+        .expect("Failed to send request");
+
+    let res: DandelionDeserializeResponse = bson::from_slice(res.bytes().unwrap().iter().as_slice()).expect("BSON deserialization failed");
+    Ok(res)
+}
 
 
 pub fn register_function(url: &str, obj: &RegisterFunction) -> Result<Response, ()> {

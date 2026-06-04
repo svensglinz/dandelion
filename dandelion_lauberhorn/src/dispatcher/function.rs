@@ -27,7 +27,7 @@ pub fn execute_function<E: Engine>(
     };
 
     // grab an available engine
-    let mut engine = match ctx.engines.claim() {
+    let mut engine = match ctx.engines.pop() {
         None => {
             log::error!("no free engine available. Should not happen");
             return Err(());
@@ -87,7 +87,7 @@ pub fn execute_function<E: Engine>(
     transfer_input_sets(&mut function_context, &func_info.metadata, &input_vec);
 
     // execute function on engine
-    let ctx = engine
+    let result_ctx = engine
         .run(
             function.config.clone(),
             function_context,
@@ -97,7 +97,10 @@ pub fn execute_function<E: Engine>(
             error!("Function execution failed: {}", e);
             ()
         })?;
+    
+    // release engine back to pool
+    ctx.engines.push(engine);
 
-    Ok(make_comp_set(ctx))
+    Ok(make_comp_set(result_ctx))
 }
 

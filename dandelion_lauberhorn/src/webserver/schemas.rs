@@ -101,13 +101,13 @@ pub struct DandelionRequest {
     pub sets: Vec<InputSet>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct InputSet {
     pub identifier: String,
     pub items: Vec<InputItem>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct InputItem {
     pub identifier: String,
     pub key: u32,

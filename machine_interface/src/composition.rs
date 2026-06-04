@@ -353,7 +353,7 @@ impl JoinIterator {
                     // advance both at least once for inner
                     // left is advanced on checking (after checking right can stil be advanced)
                     // right is advanced after
-                    if self.right_index >= right.len() || left.advance() {
+                    if self.right_index >= right.len() || !left.advance() {
                         return false;
                     }
                     self.right_index += 1;
@@ -380,6 +380,8 @@ impl JoinIterator {
                     if left.advance() {
                         while self.right_index < right.len()
                             && right[self.right_index].item_list[0].0 < left.key
+                            && self.right_index + 1 < right.len()
+                            && right[self.right_index].item_list[0].0 < left.key
                         {
                             self.right_index += 1;
                         }
@@ -402,7 +404,7 @@ impl JoinIterator {
                         self.key = right[self.right_index].item_list[0].0;
                         while self.key > left.key {
                             if !left.advance() {
-                                break;
+                                return true;
                             }
                         }
                         true

@@ -1,6 +1,6 @@
 #[cfg(all(
     any(feature = "mmu", feature = "kvm", feature = "cheri"),
-    feature = "reqwest_io"
+    // feature = "reqwest_io"
 ))]
 mod server_tests {
 

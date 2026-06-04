@@ -8,7 +8,7 @@ use crate::lauberhorn::ffi::dandelion_function_handler;
 use crate::lauberhorn::lauberhorn::Lauberhorn;
 use crate::lauberhorn::marshal::DandelionRPCRequest;
 use crate::lauberhorn::marshal::DandelionRPCResponse;
-use crate::utils::objectpool::ObjectPool;
+use crossbeam::queue::ArrayQueue;
 use dandelion_commons::DandelionError;
 use dandelion_commons::DandelionResult;
 use dandelion_commons::FunctionId;
@@ -52,7 +52,7 @@ static DANDELION_NESTED_EP: LazyLock<Arc<LauberhornRpcEndpoint<DandelionRPCReque
 
 /// Context that the runtime exposes to functions
 pub struct RuntimeContext<E: Engine> {
-    pub engines: ObjectPool<NUM_CORES, E>,
+    pub engines: ArrayQueue<E>,
     // pub nested_results: ObjectPool<64, Vec<Option<CompositionSet>>>,
     pub registry: Arc<FunctionRegistry>,
     // TODO not necessary anymor e? 
@@ -101,7 +101,10 @@ impl<E: Engine> Runtime<E> {
 
         // TODO(@sven): implement properly based on #cores we want. Currently static allication of 2 engines
         // for testing
-        let engines: Vec<E> = vec![*E::init(0).unwrap(), *E::init(1).unwrap(), *E::init(2).unwrap(), *E::init(3).unwrap()];
+        let engine_queue = ArrayQueue::new(NUM_CORES);
+        for i in 0..NUM_CORES {
+            engine_queue.push(*E::init(i as u8).unwrap());
+        }
 
         let domains = get_available_domains(memory_pool);
         let registry = Arc::new(FunctionRegistry::new(&domains));
@@ -114,7 +117,7 @@ impl<E: Engine> Runtime<E> {
         debug!("registering lauberhorn function handler under prog_num={}, prog_ver={}, proc_num={}, port={}", 1, 1, 1, 11111);
 
         let rt_ctx = Arc::new(RuntimeContext{
-            engines: ObjectPool::new(engines),
+            engines: engine_queue,
             // nested_results: ObjectPool::new(Vec::with_capacity(64)),
             registry: registry.clone(),
             nested_ep: (*DANDELION_NESTED_EP).clone()
@@ -189,11 +192,11 @@ impl<E: Engine> Runtime<E> {
     pub fn run(&mut self) -> Result<(), ()> {
         debug!(
             "Running runtime with {} engines and {} memory domains",
-            self.ctx.engines.size(),
+            self.ctx.engines.len(),
             self.domains.len()
         );
 
-        for _ in 0..self.ctx.engines.size() {
+        for _ in 0..self.ctx.engines.len() {
             self.lauberhorn.create_worker(None, None);
         }
         Ok(())

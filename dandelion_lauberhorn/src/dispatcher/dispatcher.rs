@@ -145,7 +145,7 @@ impl<E: Engine> Dispatcher<E> {
             task.join_info.0.clone(),
             task.join_info.1.clone(),
         );
-
+        println!("[dispatcher::enqueue_task] task_id={} function={} num_shards={}", task_id, task.function_id, shards.len());
         // add all shards as pending
         let count = shards.len().max(1);
         self.pending_shards.insert(task_id, count);

@@ -33,7 +33,7 @@ pub fn comp_set_to_input_set(comp_set: &CompositionSet) -> InputSet {
 
         items.push(InputItem {
             identifier: data_item.ident.clone(),
-            key: key as u32,
+            key: data_item.key,
             data: bytes.to_vec(),
         });
     }
