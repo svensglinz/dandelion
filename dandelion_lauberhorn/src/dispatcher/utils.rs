@@ -166,7 +166,7 @@ pub fn transfer_input_sets(
             ident: input_set_name.clone(),
             buffers: Vec::with_capacity(capacity),
         }));
-
+        
         if let Some(transfer_set) = transfer_option {
             for (source_set_index, source_item_index, source_context) in
                 transfer_set

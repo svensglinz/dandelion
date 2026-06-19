@@ -1,5 +1,4 @@
 use dandelion_lauberhorn::webserver::schemas::{DandelionDeserializeResponse, DandelionRequest, InputItem, InputSet, RegisterChain};
-use http::Response;
 use std::vec;
 mod common;
 use common::{invoke_service, register_function};
@@ -7,6 +6,7 @@ use dandelion_lauberhorn::webserver::schemas::RegisterFunction;
 
 use crate::common::{call_function, register_composition};
 
+// TODO(@Sven): use relative paths
 const MATMUL_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../machine_interface/tests/data/test_elf_kvm_x86_64_matmul",
@@ -27,6 +27,48 @@ fn get_matmul_reg_req() -> RegisterFunction {
             .expect("Failed to read test function binary"),
         input_sets: vec![(String::from(""), None)],
         output_sets: vec![String::from("")],
+    }
+}
+
+fn get_split_words() -> RegisterFunction {
+
+    let path = "/home/sven/Desktop/reducer/build/split_words"; 
+
+    RegisterFunction {
+        name: "split_words".to_string(),
+        context_size: 0x802_0000,
+        engine_type: "Kvm".to_string(),
+        local_path: "".to_string(),
+        binary: std::fs::read(path)
+            .expect("Failed to read test function binary"),
+        input_sets: vec![(String::from(""), None)],
+        output_sets: vec![String::from("")],
+    }
+}
+
+fn get_split_sentences() -> RegisterFunction {
+    RegisterFunction {
+        name: "split_sentences".to_string(),
+        context_size: 0x802_0000,
+        engine_type: "Kvm".to_string(),
+        local_path: "".to_string(),
+        binary: std::fs::read("/home/sven/Desktop/reducer/build/split_sentences")
+            .expect("Failed to read test function binary"),
+        input_sets: vec![(String::from(""), None)],
+        output_sets: vec![String::from("")],
+    }
+}
+
+fn get_count_items() -> RegisterFunction {
+    RegisterFunction {
+        name: "count_items".to_string(),
+        context_size: 0x802_0000,
+        engine_type: "Kvm".to_string(),
+        local_path: "".to_string(),
+        binary: std::fs::read("/home/sven/Desktop/reducer/build/count_items")
+            .expect("Failed to read test function binary"),
+        input_sets: vec![(String::from("words"), None), (String::from("sentences"), None)],
+        output_sets: vec![String::from("count")],
     }
 }
 
@@ -128,7 +170,7 @@ let composition = r#"
             }
         });
     }
-    
+
     let res =
     invoke_service("graph", 1, 1, 1, "10.0.0.5", 12345, input_sets)
     .expect("invoke service failed");
@@ -147,6 +189,80 @@ let composition = r#"
     // print!("Response from composition invocation: {:?}", res);
 }
 
+
+#[test]
+fn test_word_counter() {
+    let composition = r#"
+        function split_words(doc) => (words);
+        function split_sentences(doc) => (sentences);
+        function count_items(words, sentences) => (count);
+        composition counter (documents) => (item_count) {
+            split_words(doc = each documents) => (w = words);
+            split_sentences(doc = each documents) => (s = sentences);
+            count_items(words = all w, sentences = all s) => (item_count = count);
+        }
+    "#;
+
+    let count = get_count_items();
+    let words = get_split_words();
+    let sentences = get_split_sentences();
+
+    let ep = "http://localhost:6000/register/function";
+    let reg_count = register_function(ep, &count)
+    .expect("reg_count failed");
+
+    let reg_words = register_function(ep, &words)
+    .expect("reg words failed");
+
+    let reg_sentences = register_function(ep, &sentences)
+    .expect("reg sentences failed");
+
+     let chain_request = RegisterChain {
+        composition: composition.to_string()
+    };
+
+    let reg_req = register_composition("http://localhost:6000/register/composition", &chain_request)
+    .expect("composition registration failed");
+
+    // prepare arguments
+    let documents = vec![
+        "document with seven words and once sentence",
+        "hello. world",
+        "sentence. with. seven. words and. five sentences"
+    ];
+
+    let mut input_items = Vec::new();
+
+    for (i, doc) in documents.iter().enumerate() {
+        // 1. Use .push() instead of .append()
+        input_items.push(InputItem {
+            identifier: "".to_string(),
+            key: i as u32, 
+            // 2. Use .as_bytes().to_vec() to get a Vec<u8>
+            data: doc.as_bytes().to_vec(),
+        });
+    }
+
+    let args = vec![
+        InputSet {
+            identifier: "documents".to_string(),
+            items: input_items
+        }
+    ];
+    // invoke 
+    
+    let res =
+    invoke_service("counter", 1, 1, 1, "10.0.0.5", 12345, args)
+        .expect("Failed to invoke service");
+
+    println!("got {:?}", res);
+    for set in res.sets[0].items.iter() {
+        let val = i64::from_le_bytes(set.data[..8].try_into().unwrap());
+        println!("{} {}", set.identifier, val);
+    }
+    // compare results
+
+}
 
 
 #[test]
@@ -251,6 +367,34 @@ let composition = r#"
     }
 }
 
+#[test]
+fn test_set_reducer() {
+    let req = get_split_words();
+    let res = register_function("http://localhost:6000/register/function", &req)
+    .expect("registration failed");
+
+    let data = b"hello world how are you".to_vec();
+
+    let input =  vec![InputSet {
+            identifier: "".to_string(),
+            items: vec![InputItem {
+                identifier: String::from(""),
+                key: 0,
+                data: data,
+            }],
+        }, 
+    ];
+
+    let res =
+    invoke_service("set_reducer", 1, 1, 1, "10.0.0.5", 12345, input)
+        .expect("Failed to invoke service");
+
+    println!("value is {:?}", res);
+    for item in res.sets[0].items.iter() {
+        let s = String::from_utf8(item.data.clone()).unwrap();
+        println!("{}", s);
+    }
+}
 #[test]
 fn test_matmac() {
 

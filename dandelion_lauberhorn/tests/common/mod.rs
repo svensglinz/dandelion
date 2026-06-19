@@ -117,7 +117,7 @@ pub fn invoke_service(
         })?;
     
 
-    let response = rx.recv_timeout(Duration::from_secs(2)).map_err(|e| {
+    let response = rx.recv_timeout(Duration::from_secs(5)).map_err(|e| {
         eprintln!("recv_timeout: {}", e); ()
     })?;
 
