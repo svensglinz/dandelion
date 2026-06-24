@@ -3,27 +3,33 @@ use std::vec;
 mod common;
 use common::{invoke_service, register_function};
 use dandelion_lauberhorn::webserver::schemas::RegisterFunction;
-
 use crate::common::{call_function, register_composition};
-
-// TODO(@Sven): use relative paths
-const MATMUL_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../machine_interface/tests/data/test_elf_kvm_x86_64_matmul",
-);
 
 const MATMAC_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../machine_interface/tests/data/test_elf_kvm_x86_64_matmac",
 );
 
+// resolve these inside the getters at runtime with std::env::var(..).unwrap()
+// const SPLIT_SENTENCES_PATH: &str = concat!(
+//     "./binaries/split_sentences", std::env::var("TEST_BINARY_ARCH")
+// );
+// 
+// const SPLIT_ITEMS_PATH: &str = concat!(
+//     "./binaries/split_items", std::env::var("TEST_BINARY_ARCH")
+// );
+// 
+// const SPLIT_WORDS_PATH: &str = concat!(
+//     "./binaries/split_words", std::env::var("TEST_BINARY_ARCH")
+// );
+
 fn get_matmul_reg_req() -> RegisterFunction {
     RegisterFunction {
-        name: "matmul_x86".to_string(),
+        name: "matmul".to_string(),
         context_size: 0x802_0000,
         engine_type: "Kvm".to_string(),
         local_path: "".to_string(),
-        binary: std::fs::read(MATMUL_PATH)
+        binary: std::fs::read("")
             .expect("Failed to read test function binary"),
         input_sets: vec![(String::from(""), None)],
         output_sets: vec![String::from("")],
@@ -528,35 +534,70 @@ fn register_matmul_composition() {
     println!("{:?}", res);
 }
 
+fn get_engine_name() -> String {
+    let name = if cfg!(feature = "mmu") {
+    "Process".to_string()
+    } else if cfg!(feature = "kvm") {
+        "Kvm".to_string()
+    } else {
+        "default".to_string()
+    };
+    return name; 
+}
+
+fn get_engine() -> String {
+    let name = if cfg!(feature = "mmu") {
+    "mmu".to_string()
+    } else if cfg!(feature = "kvm") {
+        "kvm".to_string()
+    } else {
+        "default".to_string()
+    };
+    return name; 
+}
+
+// fn get_binary(name: &str) -> Result<Vec<u8>, ()> {
+//         let engine = get_engine();
+//     let binary_path = std::env::var("DANDELION_TEST_BINARY_PATH").unwrap();
+//     let binary_arch = std::env::var("DANDELION_TEST_BINARY_ARCH").unwrap(); 
+//     let lauberhorn_ip = std::env::var("LAUBERHORN_IP").unwrap();
+//     let matmul_path = format!("{}/test_elf_{}_{}_matmul", binary_path, engine.to_lowercase(), binary_arch);
+//     
+//     return Err(());
+// }
+
 #[test]
-fn register_matmul_x86() {
+fn test_matmul() {
+
+    let binary_path = std::env::var("DANDELION_TEST_BINARY_PATH").unwrap();
+    let binary_arch = std::env::var("DANDELION_TEST_BINARY_ARCH").unwrap(); 
+    let lauberhorn_ip = std::env::var("LAUBERHORN_IP").unwrap();
+    let matmul_path = format!("{}/test_elf_{}_{}_matmul", binary_path, get_engine(), binary_arch);
+
+    println!("searching binary in folder {}", matmul_path);
 
     let req = RegisterFunction {
-        name: "matmul_x86".to_string(),
+        name: "matmul".to_string(),
         context_size: 0x802_0000,
-        engine_type: "Kvm".to_string(),
+        engine_type: get_engine_name(),
         local_path: "".to_string(),
-        binary: std::fs::read(MATMUL_PATH)
+        binary: std::fs::read(matmul_path)
             .expect("Failed to read test function binary"),
         input_sets: vec![(String::from(""), None)],
         output_sets: vec![String::from("")],
     };
 
+    // register binary
     let res =
         register_function("http://localhost:6000/register/function", &req)
             .expect("Failed to register function");
 
     assert_eq!(res.status(), 200);
-}
 
 
-
-
-#[test]
-fn invoke_service_test() {
     let mut data = Vec::new();
     data.extend_from_slice(&i64::to_le_bytes(1));
-        data.extend_from_slice(&i64::to_le_bytes(2));
+    data.extend_from_slice(&i64::to_le_bytes(2));
 
     let mat_request = vec![InputSet {
             identifier: String::from(""),
@@ -567,23 +608,24 @@ fn invoke_service_test() {
             }],
         }];
 
-    // Todo(@Sven): pass timeout as parameter
     let res =
-        invoke_service("matmul_x86", 1, 1, 1, "10.0.0.5", 12345, mat_request)
-            .expect("Failed to invoke service");
+    invoke_service("matmul", 1, 1, 1, &lauberhorn_ip, 12345, mat_request)
+    .expect("Failed to invoke service");
 
     let res_exp = DandelionDeserializeResponse {
-        sets: vec![InputSet {
+    sets: vec![InputSet {
+        identifier: String::from(""),
+        items: vec![InputItem {
             identifier: String::from(""),
-            items: vec![InputItem {
-                identifier: String::from(""),
-                key: 0,
-                data: vec![1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
-            }],
+            key: 0,
+            data: vec![1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
         }],
+    }],
     };
     println!("Expected response: {:?}", res_exp);
     println!("Actual response: {:?}", res);
+
+    // TODO: deregister service again
 }
 
 #[test]
