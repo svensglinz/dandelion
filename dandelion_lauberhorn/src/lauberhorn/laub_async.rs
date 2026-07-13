@@ -1,9 +1,6 @@
 use std::{collections::HashMap, ffi::c_void};
 
-use crate::lauberhorn::{codec::LauberhornRpcEndpoint,
-    ffi::{AwaitSetRaw, LauberhornCompletion, LauberhornRpcEndpointRaw,
-    lauberhorn_await_any, lauberhorn_call_async}, 
-    marshal::{RpcDecode, RpcEncode}};
+use crate::lauberhorn::{codec::LauberhornRpcEndpoint, ffi::{AwaitSetRaw, LauberhornRpcEndpointRaw, RpcResult, RpcStatus, lauberhorn_await_any, lauberhorn_call_async, lauberhorn_free_result}, marshal::{RpcDecode, RpcEncode}};
 
 #[repr(C)]
 pub struct AwaitSet<T: RpcDecode> {
@@ -14,18 +11,18 @@ pub struct AwaitSet<T: RpcDecode> {
 impl<T: RpcDecode> AwaitSet<T> {
     pub fn new() -> Self {
         AwaitSet {
-            inner: AwaitSetRaw { pending: 0 },
+            inner: AwaitSetRaw { rpc_mask: 0 },
             handles: HashMap::new(),
         }
     }
 
     pub fn add(&mut self, handle: AsyncCallHandle<T>) {
-        self.inner.pending |= 1 << handle.id;
+        self.inner.rpc_mask |= 1 << handle.id;
         self.handles.insert(handle.id, handle);
     }
 
     pub fn del(&mut self, id: usize) {
-        self.inner.pending &= !(1 << id);
+        self.inner.rpc_mask &= !(1 << id);
         self.handles.remove(&id);
     }
 
@@ -40,46 +37,47 @@ impl<T: RpcDecode> AwaitSet<T> {
     pub fn await_any(&mut self) -> Option<AsyncCallHandle<T>> {
         if self.is_empty() { return None; }
 
-        let mut completion = LauberhornCompletion::new();
-        let res = unsafe {
+        let mut result = RpcResult::empty();
+        let ok = unsafe {
             lauberhorn_await_any(
-                &self.inner as *const AwaitSetRaw,
-                &mut completion as *mut LauberhornCompletion,
+                &mut self.inner as *mut AwaitSetRaw,
+                &mut result as *mut RpcResult,
             )
         };
-        if !res { return None; }
+        if !ok { 
+            return None; 
+        }
 
-        let mut handle = self.handles.remove(&(completion.idx as usize))?;
-        // self.inner.pending &= !(1 << handle.id); (this should be done by C runtime already no ? 
+        let mut handle = self.handles.remove(&(result.id as usize))?;
 
-        handle.data = Some(Box::new(unsafe {
-            std::ptr::read(completion.data as *const T)
-        }));
-
-        // call lauberhorn free to free the result on it !
-        Some(handle)
-    }
-
-}
-
-
-impl LauberhornCompletion {
-    pub fn new() -> Self {
-        LauberhornCompletion {
-            idx: 0,
-            data: 0 as *mut c_void
+        match result.status {
+            RpcStatus::RpcOk => {
+                // claim ownership of memory back 
+                // no need to invoke lauberhorn_free_result
+                let value: Box<T> = unsafe { Box::from_raw(result.data as *mut T) };
+                handle.data = Some(value);
+                result.data = std::ptr::null_mut();
+                Some(handle)
+            }
+            RpcStatus::RpcTimeout | RpcStatus::RpcError => {
+                handle.status = result.status;
+                Some(handle)
+            }
         }
     }
+
 }
+
 
 pub struct AsyncCallHandle<T: RpcDecode> {
     pub id: usize,
+    pub status: RpcStatus,
     data: Option<Box<T>>,
 }
 
 impl<T: RpcDecode> AsyncCallHandle<T> {
     pub fn new(id: usize) -> Self {
-        AsyncCallHandle { id: id, data: None }
+        AsyncCallHandle { id: id, status: RpcStatus::RpcOk, data: None }
     }
     
     pub fn take_data(&mut self) -> Option<Box<T>> {
@@ -103,10 +101,12 @@ pub fn call_async<Req: RpcEncode, Resp: RpcDecode>(
             std::mem::size_of::<Req>(),
         )
     };
-    // 0 - 63 = okay results (idx into bitmap
+
     if res < 0 {
         Err(())
     } else {
         Ok(AsyncCallHandle::new(res as usize))
     }
 }
+
+// call_cb not implemented as not needed

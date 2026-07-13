@@ -8,7 +8,7 @@ use machine_interface::composition::{
 
 /// Task represents a single node (function) in a composition graph
 /// Each task keeps track of its required input dependencies,
-/// (optional or required), and ...
+/// (optional or required)
 #[derive(Clone)]
 pub struct Task {
     // node name
@@ -90,7 +90,7 @@ impl Task {
         };
         let is_required = self.missing.contains(&composition_id);
 
-        // CHECK THIS LOGIC ?
+        // CHECK LOGIC AGIAN
         if is_required && is_empty {
             return false;
         }

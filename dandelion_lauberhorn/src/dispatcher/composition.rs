@@ -15,6 +15,7 @@ use crate::{
     lauberhorn::{marshal::{DandelionRPCRequest}}, runtime::RuntimeContext
 };
 
+// execute a composition and return result
 pub fn execute_composition<E: Engine>(
     ctx: Arc<RuntimeContext<E>>,
     comp_info: CompositionInfo,

@@ -95,6 +95,11 @@ pub struct RegisterChain {
     pub composition: String,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub struct DeregisterRequest {
+    pub name: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DandelionRequest {
     pub name: String, // enum (name, compsition)

@@ -1,6 +1,8 @@
+use dandelion_lauberhorn::config;
 use dandelion_lauberhorn::platform;
 use dandelion_lauberhorn::runtime::create_runtime;
 use log::{error, info, warn};
+use std::process::ExitCode;
 use std::sync::Arc;
 
 use dandelion_lauberhorn::system;
@@ -19,6 +21,16 @@ fn main() {
     system::init_memory_pool();
 
     let config = dandelion_server::config::DandelionConfig::get_config();
+
+    // load lauberhorn config (mandatory)
+    let laub_config = match config::get_config() {
+        Err(_) => { 
+            warn!("could not load lauberhorn-dandelion config");
+            return ();
+        }
+        Ok(config) => config
+    };
+
     info!("Loaded configuration:\n{:?}", config);
 
     if platform::cpu::is_hyperthreading() {
@@ -36,10 +48,9 @@ fn main() {
 
     // creating runtime
     info!("Creating Runtime with lauberhorn backend");
-    let mut runtime = match create_runtime(memory_pool) {
+    let mut runtime = match create_runtime(laub_config, memory_pool) {
         Ok(rt) => {
-            rt // hack... should transform to arc already
-               // here and solve mutability issues in runtime instead of here
+            rt
         }
         Err(e) => {
             error!("Failed to create runtime: {}", e);

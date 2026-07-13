@@ -9,12 +9,6 @@ const DEFAULT_PORT: u16 = 6000;
 const DEFAULT_SINGLE_CORE: bool = false;
 const DEFAULT_TIMESTAMP_COUNT: usize = 1000;
 
-// config parameters for lauberhorn
-const DEFAULT_LAUBERHORN_HANDLER_PROG_NUM: u32 = 1;
-const DEFAULT_LAUBERHORN_HANDLER_PROG_VER: u32 = 1;
-const DEFAULT_LAUBERHORN_HANDLER_PROC_NUM: u32 = 1;
-const DEFAULT_LAUBERHORN_HANDLER_LISTEN_PORT: u16 = 11111;
-
 #[derive(serde::Deserialize, Debug)]
 pub struct PreloadFunc {
     #[serde(rename = "name")]

@@ -28,16 +28,12 @@ pub trait RpcDecode: Sized {
     fn rpc_decode(in_buf: &[u8]) -> Result<Self, ()>; 
 }
 
-/// generic decoder that calls T::rpc_decode and writes 
+/// generic deserializer that calls T::rpc_decode and writes 
 /// the pointer to the heap allocated result into *out_buf
 pub extern "C" fn dandelion_unmarshal<T: RpcDecode> (
-     in_buf: *const c_void,  out_buf: *mut *mut c_void,
+     in_buf: *const c_void,  out_buf: *mut c_void,
      in_buf_len: usize, private: *const c_void
 ) -> i32 {    
-
-    // sanity check
-    //debug_assert!(in_buf.is_null());
-    //debug_assert!(out_buf.is_null()); 
 
     let data = unsafe { std::slice::from_raw_parts(in_buf as *const u8, in_buf_len) };
 
@@ -45,7 +41,10 @@ pub extern "C" fn dandelion_unmarshal<T: RpcDecode> (
         Ok(v) => v,
         Err(_) => return -1
     }; 
-    unsafe { *out_buf = Box::into_raw(Box::new(value)) as *mut c_void; }
+
+    unsafe {
+        std::ptr::write(out_buf as *mut T, value);
+    }
     return 0;
 }
 
@@ -56,9 +55,6 @@ pub extern "C" fn dandelion_marshal<T: RpcEncode> (
     in_buf_len: usize, private: *const c_void
 ) -> i32 {
 
-    // sanity check
-    //debug_assert!(in_buf.is_null());
-    //debug_assert!(out_buf.is_null());
 
     let data = unsafe {&*(in_buf as *const T) };
     let out_buf = unsafe  { std::slice::from_raw_parts_mut(out_buf as *mut u8, 1500) };
@@ -69,12 +65,23 @@ pub extern "C" fn dandelion_marshal<T: RpcEncode> (
     }
 }
 
+pub extern "C" fn dandelion_alloc<T>(kind: RpcAllocKind, private: *mut c_void) -> *mut c_void {
+    let layout = std::alloc::Layout::new::<T>();
+    unsafe { std::alloc::alloc(layout) as *mut c_void }
+}
+
+
 /// frees the released pointer from dandelion_unmarshal
-pub extern "C" fn dandelion_free(ptr: *mut c_void, kind: RpcFreeKind, private: *mut c_void) {
-    match kind {
-        _ => {
-            unsafe { let _ = Box::from_raw(ptr); }
-        },
+pub extern "C" fn dandelion_free<T>(ptr: *mut c_void, kind: RpcFreeKind, private: *mut c_void) {
+
+    if ptr.is_null() {
+        return; 
+    }
+
+    unsafe {
+        std::ptr::drop_in_place(ptr as *mut T);
+        let layout = std::alloc::Layout::new::<T>();
+        std::alloc::dealloc(ptr as *mut u8, layout);
     }
 }
 
@@ -118,8 +125,6 @@ impl RpcDecode for DandelionRPCResponse {
 
 impl RpcDecode for DandelionRPCRequest {
     fn rpc_decode(in_buf: &[u8]) -> Result<Self, ()> {
-
-        println!("HERE - decode rpc request");
 
         let (string, rest) = xdr_get_opaque(in_buf).ok_or(())?;
         let (args, _) = xdr_get_opaque(rest).ok_or(())?;

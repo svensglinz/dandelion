@@ -581,4 +581,27 @@ impl FunctionRegistry {
             .expect("Function registry lock is poisoned!");
         lock_guard.contains_key(function_name)
     }
+
+    /// Removes the function or composition with the given identifier from the registry.
+    /// System functions are treated as if they were not present and cannot be removed.
+    ///
+    /// Once the entry is dropped from the map, the last `Arc` references to its loaded
+    /// `Function`/`Context` go with it, so the underlying memory is released through the
+    /// normal drop chain instead of needing an explicit free here.
+    pub fn remove(&self, name: &str) -> DandelionResult<()> {
+        let mut lock_guard = self
+            .function_map
+            .write()
+            .expect("Function registry lock poisoned!");
+        match lock_guard.get(name) {
+            Some(FunctionType::SystemFunction(_)) | None => {
+                return Err(DandelionError::FunctionRegistry(
+                    FunctionRegistryError::UnknownFunction(name.to_string()),
+                ))
+            }
+            _ => (),
+        };
+        lock_guard.remove(name);
+        Ok(())
+    }
 }

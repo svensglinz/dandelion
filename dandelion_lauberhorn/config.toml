@@ -1,1 +1,11 @@
+# Lauberhorn configuration
 
+daddr = "10.0.0.5"
+
+port = 12345
+
+prog_num = 1
+prog_ver = 1
+proc_num = 1
+
+num_cores = 4

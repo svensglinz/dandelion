@@ -1,6 +1,5 @@
 use crate::dispatcher::composition::execute_composition;
 use crate::dispatcher::function::execute_function;
-use crate::dispatcher::system_function::execute_system_function;
 use crate::dispatcher::utils::{comp_sets_to_input_sets};
 use crate::lauberhorn::marshal::{
     DandelionRPCRequest
@@ -12,12 +11,14 @@ use log::{debug, error};
 use machine_interface::function_driver::thread_utils::Engine;
 use std::sync::Arc;
 
+
 /// Entry point called from the FFI handler - Runs the function and returns
-/// a Vec<Option<CompositionSet>>
+/// a Vec<InputSet> which can be serialized
 pub fn dandelion_handler<E: Engine>(
     ctx: Arc<RuntimeContext<E>>,
     request: &mut DandelionRPCRequest,
 ) -> Result<Vec<InputSet>, ()> {
+
     let function_id = Arc::new(request.function_name.clone());
     debug!("Looking up function '{}' in registry", request.function_name);
 
@@ -30,23 +31,24 @@ pub fn dandelion_handler<E: Engine>(
     };
 
     let result = match func {
-        // atomic function
+
+        // atomic function, call execute_function
         FunctionType::Function(ref func_info) => {
             log::debug!("executing function");
             execute_function(ctx, func_info, request)
         }
-        // composition function
+        // composition function, call execute_composition
         FunctionType::Composition(comp_info) => {
             log::debug!("executing composition");
             execute_composition(ctx, comp_info, request)
         }
+
         // system function
         FunctionType::SystemFunction(ref _func_info) => {
-            execute_system_function(ctx, _func_info, request)
+            todo!("system functions not implemented yet");
         }
     };
 
-    // verify result
     let result = match result {
         Ok(r) => r,
         Err(_) => {

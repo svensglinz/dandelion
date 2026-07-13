@@ -11,12 +11,12 @@ lauberhorn::marshal::DandelionRPCRequest, runtime::RuntimeContext
 };
 
 /// Execute a function on the given engine using the provided request context.
-/// // what shoudl we get back here ?
 pub fn execute_function<E: Engine>(
     ctx: Arc<RuntimeContext<E>>,
     func_info: &FunctionInfo,
-    request: &mut DandelionRPCRequest, // will be assembled HERE
+    request: &mut DandelionRPCRequest,
 ) -> Result<Vec<Option<CompositionSet>>, ()> {
+    
     // TODO(@Sven): turn this into Vec<InputSet> -> Vec<Option<CompositionSet> in one go
     let context = match parse_req_ctx_from_input_sets(&request.data.sets) {
         Ok(ctx) => ctx,

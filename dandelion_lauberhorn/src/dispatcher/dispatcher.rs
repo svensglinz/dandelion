@@ -4,6 +4,7 @@ use std::{
 };
 
 use dispatcher::function_registry::CompositionInfo;
+use log::debug;
 use machine_interface::{
     composition::{get_sharding, CompositionSet},
     function_driver::thread_utils::Engine,
@@ -51,9 +52,7 @@ pub struct Dispatcher<E: Engine> {
 }
 
 impl<E: Engine> Dispatcher<E> {
-    // TODO(@Sven): can we remove the type param somehow ?
-
-    /// create a new dispatcher for the
+    /// create a new dispatcher for the given composition
     pub fn new(
         ctx: Arc<RuntimeContext<E>>,
         inputs: Vec<Option<CompositionSet>>,
@@ -145,7 +144,7 @@ impl<E: Engine> Dispatcher<E> {
             task.join_info.0.clone(),
             task.join_info.1.clone(),
         );
-        println!("[dispatcher::enqueue_task] task_id={} function={} num_shards={}", task_id, task.function_id, shards.len());
+        debug!("[dispatcher::enqueue_task] task_id={} function={} num_shards={}", task_id, task.function_id, shards.len());
         // add all shards as pending
         let count = shards.len().max(1);
         self.pending_shards.insert(task_id, count);
@@ -164,7 +163,7 @@ impl<E: Engine> Dispatcher<E> {
     // 4.  Check if this has produced any newly executable tasks, if yes, shard and push to ready queue
     // 5.  Repeat
     pub fn run(&mut self) {
-        eprintln!(
+        debug!(
             "[dispatcher::run] start shard_queue={} in_flight={}",
             self.shard_queue.len(),
             self.in_flight.len()
@@ -174,7 +173,7 @@ impl<E: Engine> Dispatcher<E> {
         // 1. shard queue is empty
         // 2. no more in flight requests
         while !self.in_flight.is_empty() || !self.shard_queue.is_empty() {
-            eprintln!(
+            debug!(
                 "[dispatcher::run] loop shard_queue={} in_flight={}",
                 self.shard_queue.len(),
                 self.in_flight.len()
@@ -182,7 +181,7 @@ impl<E: Engine> Dispatcher<E> {
 
             self.try_drain_queue();
 
-            eprintln!(
+            debug!(
                 "[dispatcher::run] after drain shard_queue={} in_flight={}",
                 self.shard_queue.len(),
                 self.in_flight.len()
@@ -191,12 +190,12 @@ impl<E: Engine> Dispatcher<E> {
             // await a result
             match self.await_set.await_any() {
                 None => {
-                    eprintln!("[dispatcher::run] await_any returned None");
+                    debug!("[dispatcher::run] await_any returned None");
                     continue;
                 }
                 // provide result
                 Some(ref mut handle) => {
-                    eprintln!(
+                    debug!(
                         "[dispatcher::run] got result handle.id={}",
                         handle.id
                     );
@@ -204,7 +203,7 @@ impl<E: Engine> Dispatcher<E> {
                     let r = handle.take_data().unwrap();
                     let (task_id, shard_idx) =
                         self.in_flight.remove(&(handle.id as i32)).unwrap();
-                    eprintln!("[dispatcher::run] result for task_id={} shard_idx={} sets={}", task_id, shard_idx, r.sets.len());
+                    debug!("[dispatcher::run] result for task_id={} shard_idx={} sets={}", task_id, shard_idx, r.sets.len());
                     // transform deserialized result (Vec<InputSet> to Vec<Option<CompositionSet>>
                     let result = input_sets_to_comp_sets(&r.sets);
 
@@ -212,7 +211,7 @@ impl<E: Engine> Dispatcher<E> {
                 }
             }
         }
-        eprintln!(
+        debug!(
             "[dispatcher::run] done output_sets={}",
             self.output_sets.len()
         );
@@ -235,7 +234,7 @@ impl<E: Engine> Dispatcher<E> {
     fn try_drain_queue(&mut self) {
         while let Some((task_id, shard_idx, shard)) = self.shard_queue.front() {
             let task = self.tasks.get(task_id).unwrap();
-            eprintln!("[dispatcher::drain] dispatching task_id={} shard_idx={} function={}", task_id, shard_idx, task.function_id);
+            debug!("[dispatcher::drain] dispatching task_id={} shard_idx={} function={}", task_id, shard_idx, task.function_id);
 
             let request = DandelionRPCRequest {
                 function_name: task.function_id.to_string(),
@@ -245,7 +244,7 @@ impl<E: Engine> Dispatcher<E> {
             };
             match call_async(&*self.ctx.nested_ep, &request) {
                 Ok(handle) => {
-                    eprintln!(
+                    debug!(
                         "[dispatcher::drain] dispatched handle.id={}",
                         handle.id
                     );
@@ -258,7 +257,7 @@ impl<E: Engine> Dispatcher<E> {
                 }
                 // no more detailed errors so far, but likely out of table slots
                 Err(()) => {
-                    eprintln!(
+                    debug!(
                         "[dispatcher::drain] call_async failed — table full?"
                     );
                     break;
@@ -274,7 +273,7 @@ impl<E: Engine> Dispatcher<E> {
         shard_idx: usize,
         result: Vec<Option<CompositionSet>>,
     ) {
-        eprintln!("[dispatcher::insert_result] task_id={} shard_idx={} result_sets={}", task_id, shard_idx, result.len());
+        debug!("[dispatcher::insert_result] task_id={} shard_idx={} result_sets={}", task_id, shard_idx, result.len());
 
         // add the result to the shard results for the task
         self.shard_results.get_mut(&task_id).unwrap()[shard_idx] = result;
@@ -283,7 +282,7 @@ impl<E: Engine> Dispatcher<E> {
         let pending = self.pending_shards.get_mut(&task_id).unwrap();
         *pending -= 1; // or maybe better by indices
 
-        eprintln!(
+        debug!(
             "[dispatcher::insert_result] pending shards remaining={}",
             pending
         );
@@ -296,12 +295,12 @@ impl<E: Engine> Dispatcher<E> {
         self.pending_shards.remove(&task_id);
         let task = &self.tasks[&task_id];
 
-        eprintln!(
+        debug!(
             "[dispatcher::insert_result] all shards done, reducing task_id={}",
             task_id
         );
         let reduced = reduce_shards(results, &task.output_set_ids);
-        eprintln!(
+        debug!(
             "[dispatcher::insert_result] reduced into {} outputs",
             reduced.len()
         );
@@ -318,7 +317,7 @@ impl<E: Engine> Dispatcher<E> {
         comp_set_idx: usize,
         result: Option<CompositionSet>,
     ) {
-        eprintln!(
+        debug!(
             "[dispatcher::provide_to_waiting] comp_set_idx={} waiting_tasks={}",
             comp_set_idx,
             self.waiting_tasks.get(&comp_set_idx).map_or(0, |v| v.len())

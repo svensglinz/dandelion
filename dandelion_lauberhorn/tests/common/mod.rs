@@ -1,27 +1,11 @@
 use std::net::UdpSocket;
-use std::sync::mpsc;
 use std::time::Duration;
 use dandelion_lauberhorn::lauberhorn::marshal::{DandelionRPCResponse, InputSets, RpcDecode, RpcEncode};
 use dandelion_lauberhorn::lauberhorn::{marshal::DandelionRPCRequest};
 use reqwest::blocking::{Client, Response};
-use dandelion_lauberhorn::webserver::schemas::{DandelionDeserializeResponse, DandelionRequest, InputSet, RegisterChain, RegisterFunction, RegisterService};
+use dandelion_lauberhorn::webserver::schemas::{DeregisterRequest, InputSet, RegisterChain, RegisterFunction, RegisterService};
 use bson::ser::to_vec;
 use dandelion_lauberhorn::utils::oncrpc;
-
-pub fn call_function(url: &str, obj: &DandelionRequest) -> Result<DandelionDeserializeResponse, ()> {
-    let client = Client::new();
-    let body = to_vec(obj).expect("BSON serialization failed");
-    let res = client
-        .post(url)
-        .header("content-type", "application/octet-stream")
-        .body(body)
-        .send()
-        .expect("Failed to send request");
-
-    let res: DandelionDeserializeResponse = bson::from_slice(res.bytes().unwrap().iter().as_slice()).expect("BSON deserialization failed");
-    Ok(res)
-}
-
 
 pub fn register_function(url: &str, obj: &RegisterFunction) -> Result<Response, ()> {
     let client = Client::new();
@@ -38,6 +22,19 @@ pub fn register_function(url: &str, obj: &RegisterFunction) -> Result<Response, 
 pub fn register_composition(url: &str, obj: &RegisterChain) -> Result<Response, ()> {
     let client = Client::new();
     let body = bson::to_vec(obj).expect("BSON serialization failed");
+    let res = client
+        .post(url)
+        .header("content-type", "application/octet-stream")
+        .body(body)
+        .send()
+        .expect("Failed to send request");
+    Ok(res)
+}
+
+pub fn deregister(url: &str, name: &str) -> Result<Response, ()> {
+    let client = Client::new();
+    let body = to_vec(&DeregisterRequest { name: name.to_string() })
+        .expect("BSON serialization failed");
     let res = client
         .post(url)
         .header("content-type", "application/octet-stream")
@@ -89,37 +86,21 @@ pub fn invoke_service(
     let sock = UdpSocket::bind("10.0.0.5:0").map_err(|e| {
         eprintln!("bind failed: {}", e); ()
     })?;
-    
-    let local_addr = sock.local_addr().map_err(|e| {
-        ()
-    })?;
 
-    let (tx, rx) = mpsc::channel::<Vec<u8>>();
-    let listener_sock = sock.try_clone().map_err(|e| {
-        ()
+    sock.set_read_timeout(Some(Duration::from_secs(5))).map_err(|e| {
+        eprintln!("set_read_timeout failed: {}", e); ()
     })?;
-    std::thread::spawn(move || {
-        let mut buf = vec![0u8; 4096];
-        match listener_sock.recv_from(&mut buf) {
-            Ok((size, src)) => {
-                eprintln!("[listener] Received {} bytes from {}", size, src);
-                buf.truncate(size);
-                let _ = tx.send(buf);
-            }
-            Err(_) => {
-            }
-        }
-    });
 
     sock.send_to(&rpc_msg.to_network_bytes(), format!("{}:{}", ip_addr, listen_port))
         .map_err(|e| {
-            ()
+            eprintln!("send_to failed: {}", e); ()
         })?;
-    
 
-    let response = rx.recv_timeout(Duration::from_secs(5)).map_err(|e| {
-        eprintln!("recv_timeout: {}", e); ()
+    let mut response = vec![0u8; 4096];
+    let received = sock.recv_from(&mut response).map_err(|e| {
+        eprintln!("recv_from failed: {}", e); ()
     })?;
+    response.truncate(received.0);
 
     if let Some(oncrpc::OncRpcMsg::Reply(response_msg)) = oncrpc::OncRpcMsg::from_network_bytes(&response) {
         let payload = response_msg.get_payload();

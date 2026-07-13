@@ -1,4 +1,6 @@
+use crate::config::LauberhornConfig;
 use crate::lauberhorn::codec::LauberhornRpcEndpoint;
+use crate::lauberhorn::ffi::LauberhornExecCtx;
 use crate::lauberhorn::ffi::LauberhornHandler;
 use crate::lauberhorn::ffi::LauberhornHandlerFunc;
 use crate::lauberhorn::ffi::RpcCodec;
@@ -25,8 +27,6 @@ use std::ffi::c_void;
 use std::sync::Arc;
 use std::sync::LazyLock;
 
-const NUM_CORES: usize = 4; 
-
 static DANDELION_RPC_OPS_SERVER: RpcOps = RpcOps::for_server::<DandelionRPCRequest, DandelionRPCResponse>();
 static DANDELION_RPC_OPS_CLIENT: RpcOps = RpcOps::for_client::<DandelionRPCRequest, DandelionRPCResponse>();
 
@@ -36,18 +36,6 @@ static DANDELION_RPC_SERVER_CODEC: LazyLock<Arc<RpcCodec>> = LazyLock::new(|| {
         ops: &DANDELION_RPC_OPS_SERVER,
         private: std::ptr::null(),
     })
-});
-
-static DANDELION_NESTED_EP: LazyLock<Arc<LauberhornRpcEndpoint<DandelionRPCRequest, DandelionRPCResponse>>> = 
-    LazyLock::new(|| {
-        Arc::new(LauberhornRpcEndpoint::new(
-            "10.0.0.5", 
-            12345, 
-            1, 
-            1, 
-            1,
-            &DANDELION_RPC_OPS_CLIENT as *const RpcOps as *mut RpcOps
-        ))
 });
 
 /// Context that the runtime exposes to functions
@@ -66,12 +54,11 @@ pub struct Runtime<E: Engine> {
     domains: Vec<Arc<Box<dyn MemoryDomain>>>,
 }
 
-// SAFETY: Runtime is shared via Arc and accessed through &self methods only.
-// The raw pointers inside Lauberhorn are C FFI handles with a managed lifecycle
-// (init on creation, join_workers on drop) and are not mutated concurrently.
 unsafe impl<E: Engine> Send for Runtime<E> {}
 unsafe impl<E: Engine> Sync for Runtime<E> {}
 
+// DOnt we already have this implemented in drop for lauebrhorn ? 
+// probably not neede d here anymore ? 
 impl<E: Engine> Drop for Runtime<E> {
     fn drop(&mut self) {
         debug!("shutting down lauberhorn workers");
@@ -92,17 +79,14 @@ impl<E: Engine> Runtime<E> {
 
     /// Initialize the runtime.
     ///
-    /// Sets up engines, memory domains, function registry, and the lauberhorn
-    /// RPC subsystem.
-    /// TODO: which kind of errror to return here ? DandelionError ?
+    /// Sets up engines, memory domains, function registry
     pub fn init(
+        config: LauberhornConfig,
         memory_pool: BTreeMap<DomainType, MemoryResource>,
     ) -> DandelionResult<Self> {
 
-        // TODO(@sven): implement properly based on #cores we want. Currently static allication of 2 engines
-        // for testing
-        let engine_queue = ArrayQueue::new(NUM_CORES);
-        for i in 0..NUM_CORES {
+        let engine_queue = ArrayQueue::new(config.num_cores);
+        for i in 0..config.num_cores {
             engine_queue.push(*E::init(i as u8).unwrap());
         }
 
@@ -110,30 +94,47 @@ impl<E: Engine> Runtime<E> {
         let registry = Arc::new(FunctionRegistry::new(&domains));
         let lauberhorn = Lauberhorn::init()?;
 
-        // currently maximum number of pending nested calls
-
         // register unique handler invocation RPC
         // TODO(@sven): use user configured values via config.rs in server crate
         debug!("registering lauberhorn function handler under prog_num={}, prog_ver={}, proc_num={}, port={}", 1, 1, 1, 11111);
+
+        let nested_ep: Arc<LauberhornRpcEndpoint<DandelionRPCRequest, DandelionRPCResponse>> = Arc::new(LauberhornRpcEndpoint::new(
+            &config.daddr,
+            config.port,
+            config.prog_num, 
+            config.prog_ver,
+            config.proc_num,
+            &DANDELION_RPC_OPS_CLIENT as *const RpcOps as *mut RpcOps
+        ));
 
         let rt_ctx = Arc::new(RuntimeContext{
             engines: engine_queue,
             // nested_results: ObjectPool::new(Vec::with_capacity(64)),
             registry: registry.clone(),
-            nested_ep: (*DANDELION_NESTED_EP).clone()
+            nested_ep: nested_ep.clone()
         });
 
+        // handler must not outlive runtime
+        let private = Arc::as_ptr(&rt_ctx) as *mut c_void; 
         // TODO(@sven): use user configured values via config.rs in server crate
+        
         lauberhorn.register_service( 
-            Arc::into_raw(rt_ctx.clone()) as *mut c_void, // TODO(@Sven): prevent memory leaks ? 
+            // INFO: as we only have one entry point, the top level function must be executed in a fiber as
+            // we don't know if the user invokes a composition or a simple function
+            // TODO: create separate endpoints / services for compositions / individual functions
             LauberhornHandler {
+             data: private, 
              func: dandelion_function_handler::<E> as LauberhornHandlerFunc,
              free: dandelion_function_free,   
+             mode: LauberhornExecCtx::ExecFiber
             },
-            1, 1, 1,
-            12345, true, // TODO(@Sven): if we only want one endpoint, must be true, else must have nested and non-nested endpoint
+            config.prog_num,
+            config.prog_ver,
+            config.proc_num,
+            config.port,
             (*&DANDELION_RPC_SERVER_CODEC).clone()
         )?;
+
         Ok(Runtime { 
             ctx: rt_ctx, 
             lauberhorn: lauberhorn, 
@@ -142,13 +143,20 @@ impl<E: Engine> Runtime<E> {
         
     }
 
-    /// Register a composition with the runtime's function registry.
     pub fn register_composition(
         &self,
         composition_desc: &str,
     ) -> DandelionResult<()> {
         debug!("Registering composition {}", composition_desc);
         self.ctx.registry.insert_compositions(composition_desc)
+    }
+
+    pub fn deregister_function(
+        &self,
+        function_name: String,
+    ) -> DandelionResult<()> {
+        debug!("Deregistering function {}", function_name);
+        self.ctx.registry.remove(&function_name)
     }
 
     /// Register a function with the runtime's function registry.
@@ -167,7 +175,6 @@ impl<E: Engine> Runtime<E> {
             function_name, engine_type, domain_type
         );
 
-        // clean this up!
         let memory_domain: &Arc<Box<dyn MemoryDomain>> = self
             .domains
             .get(domain_type as usize)
@@ -208,21 +215,22 @@ impl<E: Engine> Runtime<E> {
 /// The concrete engine type is hidden behind `impl Engine` so callers
 /// do not need to name `MmuLoop` / `KvmLoop` / `CheriLoop`.
 pub fn create_runtime(
+    config: LauberhornConfig,
     memory_pool: BTreeMap<DomainType, MemoryResource>,
 ) -> DandelionResult<Runtime<impl Engine>> {
     #[cfg(feature = "mmu")]
     {
         use machine_interface::function_driver::compute_driver::mmu::MmuLoop;
-        Runtime::<MmuLoop>::init(memory_pool)
+        Runtime::<MmuLoop>::init(config, memory_pool)
     }
     #[cfg(feature = "kvm")]
     {
         use machine_interface::function_driver::compute_driver::kvm::KvmLoop;
-        Runtime::<KvmLoop>::init(memory_pool)
+        Runtime::<KvmLoop>::init(config, memory_pool)
     }
     #[cfg(feature = "cheri")]
     {
         use machine_interface::function_driver::compute_driver::cheri::CheriLoop;
-        Runtime::<CheriLoop>::init(memory_pool)
+        Runtime::<CheriLoop>::init(config, memory_pool)
     }
 }
