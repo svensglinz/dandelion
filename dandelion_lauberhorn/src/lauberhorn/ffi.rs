@@ -1,5 +1,6 @@
 use std::ffi::{c_char, c_void};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::dispatcher::execution::dandelion_handler;
 use crate::lauberhorn::marshal::{DandelionRPCRequest, DandelionRPCResponse};
 use crate::runtime::RuntimeContext;
@@ -43,19 +44,12 @@ unsafe extern "C" {
         ep: *const LauberhornRpcEndpointRaw,
         payload: *const c_void,
         payload_len: usize,
+        f: *mut LauberhornFuture,
     ) -> i32;
 
-    pub fn lauberhorn_call_cb(
-        ep: *const LauberhornRpcEndpointRaw,
-        payload: *const c_void,
-        payload_len: usize,
-        cb: LauberhornCbHandler,
-    ) -> i32;
+    pub fn lauberhorn_future_await(f: *mut LauberhornFuture);
 
-    pub fn lauberhorn_await_any(
-        set: *mut AwaitSetRaw,
-        result: *mut RpcResult,
-    ) -> bool;
+    pub fn lauberhorn_future_select(f: *mut *mut LauberhornFuture, n: i32) -> i32;
 
     pub fn lauberhorn_free_result(result: *mut RpcResult);
 }
@@ -69,8 +63,6 @@ pub type LauberhornUserCb = unsafe extern "C" fn(i32);
 // lauberhorn_handler_func_t, lauberhorn_handler_free_t
 pub type LauberhornHandlerFunc = extern "C" fn(private: *mut c_void, msg: *mut c_void, xid: u32) -> *mut c_void;
 pub type LauberhornHandlerFree = extern "C" fn(msg: *mut c_void);
-
-pub type LauberhornCb = extern "C" fn(reply: *mut RpcResult, data: *mut c_void);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -88,34 +80,28 @@ pub struct LauberhornHandler {
     pub mode: LauberhornExecCtx,
 }
 
+// lauberhorn_rpc_status_t
 #[repr(C)]
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RpcStatus {
     RpcOk = 0,
     RpcTimeout = 1,
     RpcError = 2,
+    RpcCancelled = 3,
 }
 
+// rpc_result_t
 #[repr(C)]
 pub struct RpcResult {
     pub data: *mut c_void,
-    pub status: RpcStatus,
-    pub id: i32,
     pub codec: *mut RpcCodec,
+    pub code: RpcStatus,
 }
 
 impl RpcResult {
     pub fn empty() -> Self {
-        RpcResult { data: std::ptr::null_mut(), status: RpcStatus::RpcOk, id: -1, codec: std::ptr::null_mut() }
+        RpcResult { data: std::ptr::null_mut(), codec: std::ptr::null_mut(), code: RpcStatus::RpcOk }
     }
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct LauberhornCbHandler {
-    pub cb: LauberhornCb,
-    pub data: *mut c_void,
-    pub mode: LauberhornExecCtx,
 }
 
 pub type LauberhornWorker = *mut c_void;
@@ -168,12 +154,39 @@ unsafe impl Send for RpcCodec {}
 unsafe impl Send for RpcOps {}
 
 
-// await_set_t
+// struct fiber_handle (fiber_handle.h)
 #[repr(C)]
-pub struct AwaitSetRaw {
-    pub(crate) rpc_mask: usize,
+#[derive(Clone, Copy)]
+pub struct FiberHandle {
+    pub(crate) f: *mut c_void, // struct fiber *
+    pub(crate) gen: u32,
 }
 
+impl FiberHandle {
+    pub fn empty() -> Self {
+        FiberHandle { f: std::ptr::null_mut(), gen: 0 }
+    }
+}
+
+// lauberhorn_future_t
+#[repr(C)]
+pub struct LauberhornFuture {
+    pub(crate) owner: FiberHandle,
+    pub(crate) xid: u32,
+    pub(crate) result: RpcResult,
+    pub(crate) c: *mut c_void, // struct pending_call *
+}
+
+impl LauberhornFuture {
+    pub fn empty() -> Self {
+        LauberhornFuture {
+            owner: FiberHandle::empty(),
+            xid: 0,
+            result: RpcResult::empty(),
+            c: std::ptr::null_mut(),
+        }
+    }
+}
 
 // lauberhorn_rpc_endpoint_t
 #[repr(C)]
@@ -185,7 +198,6 @@ pub struct LauberhornRpcEndpointRaw {
     pub(crate) proc_num: u32,
     pub(crate) codec: *mut RpcCodec,
 }
-
 
 /// Opaque context handle returned by `lauberhorn_init`.
 #[repr(C)]
@@ -200,6 +212,7 @@ impl LauberhornCtx {
     }
 }
 
+//static EXECUTION_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 /// RPC handler callback — dispatches into the typed dandelion execution path.
 /// 
@@ -216,10 +229,13 @@ pub extern "C" fn dandelion_function_handler<E: Engine>(
     };
 
     let rpc_req = unsafe { &mut *(req as *mut DandelionRPCRequest) };
+    
+    //let count = EXECUTION_COUNTER.fetch_add(1, Ordering::Relaxed);
 
+    //log::warn!("starting execution {:?}", count);
     // execute request
     let sets = dandelion_handler::<E>(ctx, rpc_req).unwrap();
-
+    //log::warn!("finish execution {:?}", count);
     // create response
     let response = DandelionRPCResponse {
         sets: sets

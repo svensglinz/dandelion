@@ -1,29 +1,26 @@
-use std::{collections::HashMap, ffi::c_void};
+use std::ffi::c_void;
 
-use crate::lauberhorn::{codec::LauberhornRpcEndpoint, ffi::{AwaitSetRaw, LauberhornRpcEndpointRaw, RpcResult, RpcStatus, lauberhorn_await_any, lauberhorn_call_async, lauberhorn_free_result}, marshal::{RpcDecode, RpcEncode}};
+use crate::lauberhorn::{
+    codec::LauberhornRpcEndpoint,
+    ffi::{
+        lauberhorn_call_async, lauberhorn_future_select, LauberhornFuture, LauberhornRpcEndpointRaw,
+        RpcStatus,
+    },
+    marshal::{RpcDecode, RpcEncode},
+};
 
-#[repr(C)]
-pub struct AwaitSet<T: RpcDecode> {
-    inner: AwaitSetRaw,
-    handles: HashMap<usize, AsyncCallHandle<T>>,
+
+pub struct AwaitSet<T: RpcDecode, C> {
+    handles: Vec<AsyncCallHandle<T, C>>,
 }
 
-impl<T: RpcDecode> AwaitSet<T> {
+impl<T: RpcDecode, C> AwaitSet<T, C> {
     pub fn new() -> Self {
-        AwaitSet {
-            inner: AwaitSetRaw { rpc_mask: 0 },
-            handles: HashMap::new(),
-        }
+        AwaitSet { handles: Vec::new() }
     }
 
-    pub fn add(&mut self, handle: AsyncCallHandle<T>) {
-        self.inner.rpc_mask |= 1 << handle.id;
-        self.handles.insert(handle.id, handle);
-    }
-
-    pub fn del(&mut self, id: usize) {
-        self.inner.rpc_mask &= !(1 << id);
-        self.handles.remove(&id);
+    pub fn add(&mut self, handle: AsyncCallHandle<T, C>) {
+        self.handles.push(handle);
     }
 
     pub fn size(&self) -> u32 {
@@ -31,55 +28,51 @@ impl<T: RpcDecode> AwaitSet<T> {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.size() == 0
+        self.handles.is_empty()
     }
 
-    pub fn await_any(&mut self) -> Option<AsyncCallHandle<T>> {
-        if self.is_empty() { return None; }
-
-        let mut result = RpcResult::empty();
-        let ok = unsafe {
-            lauberhorn_await_any(
-                &mut self.inner as *mut AwaitSetRaw,
-                &mut result as *mut RpcResult,
-            )
-        };
-        if !ok { 
-            return None; 
+    pub fn await_any(&mut self) -> Option<AsyncCallHandle<T, C>> {
+        if self.handles.is_empty() {
+            return None;
         }
 
-        let mut handle = self.handles.remove(&(result.id as usize))?;
+        let mut ptrs: Vec<*mut LauberhornFuture> =
+            self.handles.iter_mut().map(|h| h.future_ptr()).collect();
 
-        match result.status {
+        
+        let idx = unsafe { lauberhorn_future_select(ptrs.as_mut_ptr(), ptrs.len() as i32) };
+        if idx < 0 {
+            return None;
+        }
+
+        let mut handle = self.handles.swap_remove(idx as usize);
+        let result = unsafe { &mut (*handle.future_ptr()).result };
+
+        match result.code {
             RpcStatus::RpcOk => {
-                // claim ownership of memory back 
-                // no need to invoke lauberhorn_free_result
+                // claim ownership of the decoded response back
                 let value: Box<T> = unsafe { Box::from_raw(result.data as *mut T) };
                 handle.data = Some(value);
                 result.data = std::ptr::null_mut();
-                Some(handle)
             }
-            RpcStatus::RpcTimeout | RpcStatus::RpcError => {
-                handle.status = result.status;
-                Some(handle)
-            }
+            other => handle.status = other,
         }
+        Some(handle)
     }
-
 }
 
-
-pub struct AsyncCallHandle<T: RpcDecode> {
-    pub id: usize,
+pub struct AsyncCallHandle<T: RpcDecode, C> {
     pub status: RpcStatus,
+    pub context: C,
+    future: Box<LauberhornFuture>,
     data: Option<Box<T>>,
 }
 
-impl<T: RpcDecode> AsyncCallHandle<T> {
-    pub fn new(id: usize) -> Self {
-        AsyncCallHandle { id: id, status: RpcStatus::RpcOk, data: None }
+impl<T: RpcDecode, C> AsyncCallHandle<T, C> {
+    fn future_ptr(&mut self) -> *mut LauberhornFuture {
+        &mut *self.future as *mut LauberhornFuture
     }
-    
+
     pub fn take_data(&mut self) -> Option<Box<T>> {
         self.data.take()
     }
@@ -89,23 +82,32 @@ impl<T: RpcDecode> AsyncCallHandle<T> {
     }
 }
 
-pub fn call_async<Req: RpcEncode, Resp: RpcDecode>(
+pub fn call_async<Req: RpcEncode, Resp: RpcDecode, C>(
     ep: &LauberhornRpcEndpoint<Req, Resp>,
     payload: &Req,
-) -> Result<AsyncCallHandle<Resp>, ()> {
+    context: C,
+) -> Result<AsyncCallHandle<Resp, C>, ()> {
+    let mut future = Box::new(LauberhornFuture::empty());
+
     let res = unsafe {
-        // from ffi
         lauberhorn_call_async(
             &ep.inner as *const LauberhornRpcEndpointRaw,
             payload as *const Req as *const c_void,
             std::mem::size_of::<Req>(),
+            &mut *future as *mut LauberhornFuture,
         )
     };
 
-    if res < 0 {
+    // 0 on success, -1 if the pending-call table is full.
+    if res != 0 {
         Err(())
     } else {
-        Ok(AsyncCallHandle::new(res as usize))
+        Ok(AsyncCallHandle {
+            status: RpcStatus::RpcOk,
+            context,
+            future,
+            data: None,
+        })
     }
 }
 

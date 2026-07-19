@@ -2,7 +2,6 @@ use dandelion_lauberhorn::config;
 use dandelion_lauberhorn::platform;
 use dandelion_lauberhorn::runtime::create_runtime;
 use log::{error, info, warn};
-use std::process::ExitCode;
 use std::sync::Arc;
 
 use dandelion_lauberhorn::system;

@@ -31,9 +31,8 @@ use crate::{
 pub struct Dispatcher<E: Engine> {
     pub ctx: Arc<RuntimeContext<E>>,
 
-    // handle -> (task_id, shard_idx)
-    pub await_set: AwaitSet<DandelionRPCResponse>,
-    pub in_flight: HashMap<i32, (usize, usize)>,
+    // in-flight async calls
+    pub await_set: AwaitSet<DandelionRPCResponse, (usize, usize)>,
 
     // task_id -> task
     pub tasks: HashMap<usize, Task>,
@@ -60,7 +59,6 @@ impl<E: Engine> Dispatcher<E> {
     ) -> Self {
 
         // initialize output sets
-        // we need #(highest index output_map maps to) + 1
         // number of slots to store intermediate and final outputs
         let num_slots = comp_info.composition.output_map.keys().max().copied().unwrap_or(0) + 1;
         let mut output_sets = vec![None; num_slots];
@@ -75,7 +73,6 @@ impl<E: Engine> Dispatcher<E> {
         let mut dispatcher = Dispatcher {
             ctx,
             await_set: AwaitSet::new(),
-            in_flight: HashMap::new(),
             tasks: HashMap::new(),
             waiting_tasks: HashMap::new(),
             waiting_optional_tasks: HashMap::new(),
@@ -163,20 +160,21 @@ impl<E: Engine> Dispatcher<E> {
     // 4.  Check if this has produced any newly executable tasks, if yes, shard and push to ready queue
     // 5.  Repeat
     pub fn run(&mut self) {
+        let t_run = std::time::Instant::now();
         debug!(
             "[dispatcher::run] start shard_queue={} in_flight={}",
             self.shard_queue.len(),
-            self.in_flight.len()
+            self.await_set.size()
         );
 
         // drain queue and execute RPC requests until
         // 1. shard queue is empty
         // 2. no more in flight requests
-        while !self.in_flight.is_empty() || !self.shard_queue.is_empty() {
+        while !self.await_set.is_empty() || !self.shard_queue.is_empty() {
             debug!(
                 "[dispatcher::run] loop shard_queue={} in_flight={}",
                 self.shard_queue.len(),
-                self.in_flight.len()
+                self.await_set.size()
             );
 
             self.try_drain_queue();
@@ -184,7 +182,7 @@ impl<E: Engine> Dispatcher<E> {
             debug!(
                 "[dispatcher::run] after drain shard_queue={} in_flight={}",
                 self.shard_queue.len(),
-                self.in_flight.len()
+                self.await_set.size()
             );
 
             // await a result
@@ -195,14 +193,10 @@ impl<E: Engine> Dispatcher<E> {
                 }
                 // provide result
                 Some(ref mut handle) => {
-                    debug!(
-                        "[dispatcher::run] got result handle.id={}",
-                        handle.id
-                    );
+                    let (task_id, shard_idx) = handle.context;
+                    debug!("[dispatcher::run] got result task_id={} shard_idx={}", task_id, shard_idx);
                     // extract response
                     let r = handle.take_data().unwrap();
-                    let (task_id, shard_idx) =
-                        self.in_flight.remove(&(handle.id as i32)).unwrap();
                     debug!("[dispatcher::run] result for task_id={} shard_idx={} sets={}", task_id, shard_idx, r.sets.len());
                     // transform deserialized result (Vec<InputSet> to Vec<Option<CompositionSet>>
                     let result = input_sets_to_comp_sets(&r.sets);
@@ -215,6 +209,7 @@ impl<E: Engine> Dispatcher<E> {
             "[dispatcher::run] done output_sets={}",
             self.output_sets.len()
         );
+        //log::warn!("[dispatcher::run] total {} us", t_run.elapsed().as_micros());
     }
 
     // get the final output sets after execution is done, ordered by the output index in the composition
@@ -242,16 +237,9 @@ impl<E: Engine> Dispatcher<E> {
                     sets: comp_sets_to_input_sets(shard), // todo implement this
                 },
             };
-            match call_async(&*self.ctx.nested_ep, &request) {
+            match call_async(&*self.ctx.nested_ep, &request, (*task_id, *shard_idx)) {
                 Ok(handle) => {
-                    debug!(
-                        "[dispatcher::drain] dispatched handle.id={}",
-                        handle.id
-                    );
-
-                    // TODO(@Sven): in-flight, await-set could be combined ?
-                    self.in_flight
-                        .insert(handle.id as i32, (*task_id, *shard_idx));
+                    debug!("[dispatcher::drain] dispatched task_id={} shard_idx={}", task_id, shard_idx);
                     self.await_set.add(handle);
                     self.shard_queue.pop_front();
                 }

@@ -1,4 +1,4 @@
-use std::{ffi::c_void, sync::Arc};
+use std::{sync::Arc};
 
 use dandelion_commons::{DandelionError, DandelionResult};
 
@@ -59,7 +59,6 @@ impl Lauberhorn {
         };
 
         if id < 0 {
-            // self.codecs.pop()
             // TODO(@Sven): implement own error category
             Err(DandelionError::LauberhornError("lauberhorn_reg_srv".into()))
         } else {

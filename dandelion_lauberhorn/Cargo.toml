@@ -31,6 +31,10 @@ itertools = "0.14.0"
 crossbeam = "0.8.4"
 toml = "1.1.2"
 
+[[bin]]
+name = "latency"
+path = "benchmarks/src/latency.rs"
+
 [features]
 cheri = ["machine_interface/cheri", "dispatcher/cheri"]
 mmu = ["machine_interface/mmu", "dispatcher/mmu"]
