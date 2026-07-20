@@ -19,7 +19,7 @@ let
       pkgs.libtirpc
     ];
     # Cargo configuration
-    cargoExtraArgs = "--features mmu --package dandelion_lauberhorn --package machine_interface";
+    cargoExtraArgs = "--features mmu --package dandelion_lauberhorn --package machine_interface --bin latency";
     RUSTFLAGS = "-C link-arg=-L${runtimePkg} -C link-arg=-L${pkgs.libtirpc}/lib -C link-arg=-Wl,-rpath,${runtimePkg}";
     CARGO_PROFILE = "release";
   };
@@ -58,6 +58,7 @@ craneLib.buildPackage (commonArgs // {
     mkdir -p $out/bin
     cp target/aarch64-unknown-linux-gnu/release/dandelion_lauberhorn $out/bin/
     cp target/aarch64-unknown-linux-gnu/release/mmu_worker $out/bin/
+    cp target/aarch64-unknown-linux-gnu/release/latency $out/bin/
     cp ./dandelion_lauberhorn/config.toml $out/config
   '';
   

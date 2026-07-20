@@ -489,18 +489,18 @@ fn main() {
 
     // register functions and compositions
     for f in &get_reg_functions(&config) {
-        let _ = register_function("http://localhost:6000/register/function", f);
+        let _ = register_function(format!("http://{}:{}/register/function", &config.dandelion_ip, config.dandelion_port).as_str(), f);
     }
 
     for c in &get_reg_compositions(&config) {
-        let _ = register_composition("http://localhost:6000/register/composition", c);
+        let _ = register_composition(format!("http://{}:{}/register/composition", &config.dandelion_ip, config.dandelion_port).as_str(), c);
     }
 
     let mode = if use_http { "http" } else { "rpc" };
     let mut samples = Vec::with_capacity(config.n_iters);
 
     if use_http {
-        let endpoint: String = format!("http://localhost:6000/execute");
+        let endpoint: String = format!("http://{}:{}/execute", &config.dandelion_ip, config.dandelion_port);
         let client = Client::new();
         let body = build_wire(&config, &config.function_name);
         println!("[http] target {}:{}, function \"{}\"", &config.dandelion_ip, config.dandelion_port, &config.function_name);
