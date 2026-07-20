@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # relative to crate root
-export DANDELION_TEST_BINARY_PATH="/mnt/extra_part/Code/dandelion/machine_interface/tests/data"
-export DANDELION_TEST_BINARY_ARCH="x86_64"
-export LAUBERHORN_IP="10.0.0.5"
+export DANDELION_TEST_BINARY_PATH="./binaries/"
+export DANDELION_TEST_BINARY_ARCH="aarch64"
+export LAUBERHORN_IP="192.168.129.222"
 export DANDELION_SERVER="localhost"
 export DANDELION_PORT=6000
 export LAUBERHORN_PORT=12345

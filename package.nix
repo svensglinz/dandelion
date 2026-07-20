@@ -41,6 +41,8 @@ let
             cp "$bin" $out/tests/
           done
 
+      cp ./dandelion_lauberhorn/tests/config.sh $out
+
       # TODO: COPY SCIRPT THAT SETS UP ENV VARIABLES FOR TESTING AND LATENCY BINARY
       # Copy binaries and other needed assets
       if [ -d "./machine_interface/tests/data" ]; then
@@ -56,6 +58,7 @@ craneLib.buildPackage (commonArgs // {
     mkdir -p $out/bin
     cp target/aarch64-unknown-linux-gnu/release/dandelion_lauberhorn $out/bin/
     cp target/aarch64-unknown-linux-gnu/release/mmu_worker $out/bin/
+    cp ./dandelion_lauberhorn/config.toml $out/config
   '';
   
   passthru = {
