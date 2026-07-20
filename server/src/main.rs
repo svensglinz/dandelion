@@ -364,6 +364,7 @@ async fn service(
         | "/cold/chain_scaling"
         | "/cold/middleware_app"
         | "/cold/compression_app"
+        | "/execute" // added for testing
         | "/cold/python_app" => serve_request(true, req, dispatcher).await,
         "/hot/matmul"
         | "/hot/matmulstore"

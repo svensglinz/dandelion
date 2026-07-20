@@ -28,67 +28,22 @@ struct TestConfig {
     lauberhorn_proc_num: u32,
 }
 
-impl TestConfig {
-    fn from_env() -> Self {
-        let binary_path = std::env::var("DANDELION_TEST_BINARY_PATH")
-            .expect("DANDELION_TEST_BINARY_PATH must be set");
-        let binary_arch = std::env::var("DANDELION_TEST_BINARY_ARCH")
-            .expect("DANDELION_TEST_BINARY_ARCH must be set");
-        let lauberhorn_ip = std::env::var("LAUBERHORN_IP")
-            .expect("LAUBERHORN_IP must be set");
-        let dandelion_server = std::env::var("DANDELION_SERVER")
-            .expect("DANDELION_SERVER must be set");
-        let lauberhorn_port = std::env::var("LAUBERHORN_PORT")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(12345);
-        let dandelion_port = std::env::var("DANDELION_PORT")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(6000);
-        let dandelion_isol_type = std::env::var("DANDELION_ISOL_TYPE")
-            .expect("DANDELION_ISOL_TYPE must be set");
-        let lauberhorn_prog_num = std::env::var("LAUBERHORN_PROG_NUM")
-            .expect("LAUBERHORN_PROG_NUM must be set")
-            .parse()
-            .expect("LAUBERHORN_PROG_NUM must be a valid number");
-        let lauberhorn_prog_ver = std::env::var("LAUBERHORN_PROG_VER")
-            .expect("LAUBERHORN_PROG_VER must be set")
-            .parse()
-            .expect("LAUBERHORN_PROG_VER must be a valid number");
-        let lauberhorn_proc_num = std::env::var("LAUBERHORN_PROC_NUM")
-            .expect("LAUBERHORN_PROC_NUM must be set")
-            .parse()
-            .expect("LAUBERHORN_PROC_NUM must be a valid number");
-        
-        TestConfig {
-            binary_path,
-            binary_arch,
-            lauberhorn_ip,
-            lauberhorn_port,
-            dandelion_server,
-            dandelion_port,
-            dandelion_isol_type,
-            lauberhorn_prog_num, 
-            lauberhorn_prog_ver,
-            lauberhorn_proc_num,
-        }
-    }
-
-    fn server_url(&self, path: &str) -> String {
-        format!("http://{}:{}{}", self.dandelion_server, self.dandelion_port, path)
-    }
-
-    fn test_binary(&self, base_name: &str) -> String {
-        format!("{}/test_elf_{}_{}_{}", self.binary_path, self.dandelion_isol_type, self.binary_arch, base_name)
-    }
+// to get around lifetime issues
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DandelionServerRequest {
+        name: String, 
+        sets: Vec<InputSet>
 }
 
+enum Request {
+    Rpc(DandelionRPCRequest),
+    Http(DandelionServerRequest)
+}
 /*
 matmul composition
 */
 // try to reuse and import stuff from test/commons 
-fn build_matmul_matmac_composition() -> DandelionRPCRequest {
+fn build_matmul_matmac_composition(http: bool) -> Request {
 
       // 2. build arguments for composition
         let matrix_a: Vec<u8> = vec![
@@ -138,13 +93,21 @@ fn build_matmul_matmac_composition() -> DandelionRPCRequest {
         });
     }
 
-    DandelionRPCRequest {
-        function_name: "graph".into(),
-        data: InputSets {
+    if !http {
+        Request::Rpc(DandelionRPCRequest {
+            function_name: "graph".into(),
+            data: InputSets {
+                sets: input_sets
+            }
+        })
+    } else {
+        Request::Http(DandelionServerRequest {
+            name: "graph".into(),
             sets: input_sets
-        }
+        })
     }
 }
+
 
 fn verify_matmul_matmac_composition(resp: &DandelionRPCResponse) -> bool {
      let d = resp.sets[0].items[0].data
@@ -158,21 +121,31 @@ fn verify_matmul_matmac_composition(resp: &DandelionRPCResponse) -> bool {
     true
 }
 
-fn build_matmul() -> DandelionRPCRequest {
+fn build_matmul(http: bool) -> Request {
     let data: Vec<u8> = vec![1i64, 1].iter().flat_map(|x| x.to_le_bytes()).collect();
 
-    DandelionRPCRequest {
-        function_name: "matmul".into(),
-        data: InputSets {
+    if !http {
+        Request::Rpc(DandelionRPCRequest {
+            function_name: "matmul".into(),
+            data: InputSets {
+                sets: vec![InputSet {
+                    identifier: String::from(""),
+                    items: vec![InputItem { identifier: String::from(""), key: 0, data }],
+                }],
+            },
+        })
+    } else {
+        Request::Http(DandelionServerRequest {
+            name: "matmul".into(),
             sets: vec![InputSet {
-                identifier: String::from(""),
-                items: vec![InputItem { identifier: String::from(""), key: 0, data }],
-            }],
-        },
+                    identifier: String::from(""),
+                    items: vec![InputItem { identifier: String::from(""), key: 0, data }],
+                }]
+        })
     }
 }
 
-fn build_matmac() -> DandelionRPCRequest {
+fn build_matmac(http: bool) -> Request {
 
      // 2. invoke function
     let matrix_a: Vec<u8> = vec![
@@ -224,36 +197,50 @@ fn build_matmac() -> DandelionRPCRequest {
             }],
         }];
     
+    // for some reason, changed this to function_name .. ?? 
     // how does this even work ? cant put vec it ino
-    DandelionRPCRequest {
-        data: InputSets {
-            sets: request   
-        },
-        function_name: "matmac".into()
+    if !http {
+        Request::Rpc(DandelionRPCRequest {
+            data: InputSets {
+                sets: request   
+            },
+            function_name: "matmac".into()
+        })
+    } else {
+        Request::Http(DandelionServerRequest { 
+            name: "matmac".into(),
+            sets: request
+        })
     }
 
 }
 
-fn build_wire(config: &TestConfig, function_name: &str) -> Vec<u8> {
+fn build_wire(config: &Config, function_name: &str) -> Vec<u8> {
 
     // argument representations we chan chose from 
     // matmul, matmac, matmul_matmac_composition
     let request = match function_name {
-        "matmul" => build_matmul(),
-        "matmac" => build_matmac(),
-        "graph" => build_matmul_matmac_composition(),
+        "matmul" => build_matmul(config.use_http),
+        "matmac" => build_matmac(config.use_http),
+        "graph" => build_matmul_matmac_composition(config.use_http),
         // throw error here !
         _ => return vec![],
     };
 
-    let mut buffer = vec![0u8; 1500];
-    let bytes_written = request
-        .rpc_encode(buffer.as_mut_slice())
-        .expect("rpc_encode failed");
+    match request {
+        Request::Http(r) => bson::to_vec(&r).unwrap(),
+        Request::Rpc(r) => {
+            let mut buffer = vec![0u8; 1500];
+            let bytes_written = r
+                .rpc_encode(buffer.as_mut_slice())
+                .expect("rpc_encode failed");
 
-    let mut rpc_msg = oncrpc::OncRpcCall::new(&buffer[..bytes_written as usize]);
-    rpc_msg.set_identifier(config.lauberhorn_prog_num, config.lauberhorn_prog_ver, config.lauberhorn_proc_num);
-    rpc_msg.to_network_bytes()
+            let mut rpc_msg = oncrpc::OncRpcCall::new(&buffer[..bytes_written as usize]);
+            // put in config 
+            rpc_msg.set_identifier(1, 1, 1);
+            rpc_msg.to_network_bytes()
+        }
+    }
 }
 
 
@@ -320,7 +307,7 @@ fn get_engine_name() -> String {
     return name; 
 }
 
-fn get_reg_compositions(config: &TestConfig) -> Vec<RegisterChain> {
+fn get_reg_compositions(config: &Config) -> Vec<RegisterChain> {
         // just something random to test compositions
     let comp_str = r#"
     function matmul (mat_in) => (matmul_out);
@@ -345,7 +332,7 @@ fn get_reg_compositions(config: &TestConfig) -> Vec<RegisterChain> {
     vec![comp_reg]
 }
 
-fn get_reg_functions(config: &TestConfig) -> Vec<RegisterFunction> {
+fn get_reg_functions(config: &Config) -> Vec<RegisterFunction> {
 
     // MATMAC
     let path_matmac = config.test_binary("matmac");
@@ -381,25 +368,6 @@ fn get_reg_functions(config: &TestConfig) -> Vec<RegisterFunction> {
 }
 
 
-// fn build_http_body(function_name: &str) -> Vec<u8> {
-//     let mut data = Vec::new();
-//     data.extend_from_slice(&i64::to_le_bytes(1));
-//     data.extend_from_slice(&i64::to_le_bytes(1));
-//     let mat_request = DandelionRequest {
-//         name: function_name.to_string(),
-//         sets: vec![dandelion_server::InputSet {
-//             identifier: String::from(""),
-//             items: vec![dandelion_server::InputItem {
-//                 identifier: String::from(""),
-//                 key: 0,
-//                 data: &data,
-//             }],
-//         }],
-//     };
-//     bson::to_vec(&mat_request).unwrap()
-// }
-
-
 fn one_http_request(client: &Client, endpoint: &str, body: &[u8]) -> Duration {
     let start = Instant::now();
     let resp = client
@@ -412,6 +380,42 @@ fn one_http_request(client: &Client, endpoint: &str, body: &[u8]) -> Duration {
     start.elapsed()
 }
 
+struct Config {
+    use_http: bool, 
+    n_iters: usize, 
+    n_warmup: usize, 
+    function_name: String, 
+    lauberhorn_ip: String, 
+    lauberhorn_port: u16,
+    isolation: String, 
+    dandelion_ip: String, 
+    dandelion_port: u16, 
+    binary_path: String,
+    binary_arch: String,
+}
+
+impl Config {
+    pub fn new() -> Self {
+        Config {
+            use_http: false, 
+            n_iters: 1000,
+            n_warmup: 100, 
+            function_name: "matmul".into(),
+            lauberhorn_ip: "10.0.0.5".into(),
+            lauberhorn_port: 12345,
+            isolation: "mmu".into(),
+            dandelion_ip: "127.0.0.1".into(),
+            dandelion_port: 6000,
+            binary_path: "/mnt/extra_part/Code/dandelion/machine_interface/tests/data".into(),
+            binary_arch: "x86_64".into()
+        }
+    }
+
+    fn test_binary(&self, base_name: &str) -> String {
+        format!("{}/test_elf_{}_{}_{}", self.binary_path, self.isolation, self.binary_arch, base_name)
+    }
+}
+
 fn main() {
     // Args: [--rpc | --http] [ITERS] [WARMUP] [FUNCTION_NAME]
 
@@ -422,58 +426,111 @@ fn main() {
         panic!("pass only one of --rpc / --http");
     }
 
-    let positional: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
-    let iters: usize = positional.first().and_then(|a| a.parse().ok()).unwrap_or(1000);
-    let warmup: usize = positional.get(1).and_then(|a| a.parse().ok()).unwrap_or(100);
-    let function_name = positional.get(2).map(|s| s.to_string()).unwrap_or_else(|| "matmul".to_string());
+    let mut config = Config::new();
+    let mut args_iter = args.iter().peekable();
 
-    let test_config = TestConfig::from_env();
+    while let Some(arg) = args_iter.next() {
+        match arg.as_str() {
+            "--rpc" => config.use_http = false,
+            "--http" => config.use_http = true,
+            "--nwarmup" => {
+                if let Some(next_val) = args_iter.next() {
+                    config.n_warmup = next_val.parse::<usize>().expect("Invalid number for --nwarmup");
+                }
+            }
+            "--niters" => {
+                if let Some(next_val) = args_iter.next() {
+                    config.n_iters = next_val.parse::<usize>().expect("Invalid number for --niters");
+                }
+            }
+            "--function" => {
+                if let Some(next_val) = args_iter.next() {
+                    config.function_name = next_val.to_string();
+                }
+            }
+            "--lauberhorn-ip" => {
+                if let Some(next_val) = args_iter.next() {
+                    config.function_name = next_val.to_string();
+                }
+            }
+            "--lauberhorn-port" => {
+                if let Some(next_val) = args_iter.next() {
+                    config.lauberhorn_port = next_val.parse::<u16>().expect("invalid number for --lauberhorn-port");
+                }
+            }   
+            "--dandelion-port" => {
+                if let Some(next_val) = args_iter.next() {
+                    config.dandelion_port = next_val.parse::<u16>().expect("invalid number for --dandelion-port");
+                }
+            } 
+            "--dandelion-ip" => {
+                if let Some(next_val) = args_iter.next() {
+                    config.dandelion_ip = next_val.to_string();
+                }
+            }
+            "--isolation" => {
+                if let Some(next_val) = args_iter.next() {
+                    config.isolation = next_val.to_string();
+                }
+            }
+            "--binary-path" => {
+                if let Some(next_val) = args_iter.next() {
+                    config.binary_path = next_val.to_string();
+                }
+            }
+            "--binary-arch" => {
+                if let Some(next_val) = args_iter.next() {
+                    config.binary_arch = next_val.to_string();
+                }
+            }                             
+            _ => {} // Ignore unknown arguments or the binary name
+        }
+    }
 
     // register functions and compositions
-    for f in &get_reg_functions(&test_config) {
+    for f in &get_reg_functions(&config) {
         let _ = register_function("http://localhost:6000/register/function", f);
     }
 
-    for c in &get_reg_compositions(&test_config) {
+    for c in &get_reg_compositions(&config) {
         let _ = register_composition("http://localhost:6000/register/composition", c);
     }
 
     let mode = if use_http { "http" } else { "rpc" };
-    let mut samples = Vec::with_capacity(iters);
+    let mut samples = Vec::with_capacity(config.n_iters);
 
-    // NOT IMPLEMENTED YET
     if use_http {
-        // let endpoint: String = format!("http://localhost:6000/cold/{function_name}");
-        // let client = Client::new();
-        // let body = build_http_body(&function_name);
-        // println!("[{mode}] target {endpoint}, function \"{function_name}\"");
-// 
-        // println!("Warming up ({warmup} requests)...");
-        // for _ in 0..warmup {
-        //     one_http_request(&client, &endpoint, &body);
-        // }
-        // println!("Measuring {iters} requests...");
-        // for _ in 0..iters {
-        //     samples.push(one_http_request(&client, &endpoint, &body));
-        // }
+        let endpoint: String = format!("http://localhost:6000/execute");
+        let client = Client::new();
+        let body = build_wire(&config, &config.function_name);
+        println!("[http] target {}:{}, function \"{}\"", &config.dandelion_ip, config.dandelion_port, &config.function_name);
+
+        println!("Warming up ({} requests)...", config.n_warmup);
+        for _ in 0..config.n_warmup {
+            one_http_request(&client, &endpoint, &body);
+        }
+        println!("Measuring {} requests...", config.n_iters);
+        for _ in 0..config.n_iters {
+            samples.push(one_http_request(&client, &endpoint, &body));
+        }
     } else {
 
-        let dest = format!("{}:{}", test_config.lauberhorn_ip, test_config.lauberhorn_port);
+        let dest = format!("{}:{}", &config.lauberhorn_ip, &config.lauberhorn_port);
 
         // get payload
-        let wire = build_wire(&test_config, &function_name);
+        let wire = build_wire(&config, &config.function_name);
 
         // bind to random port for sending
         let sock = UdpSocket::bind(format!("127.0.0.1:9999")).expect("bind failed");
         sock.set_read_timeout(Some(Duration::from_secs(5))).expect("set_read_timeout failed");
-        println!("[{mode}] target {dest}, function \"{function_name}\"");
+        println!("[{mode}] target {dest}, function \"{}\"", &config.function_name);
 
-        println!("Warming up ({warmup} requests)...");
-        for _ in 0..warmup {
+        println!("Warming up ({} requests)...", config.n_warmup);
+        for _ in 0..config.n_warmup {
             one_request(&sock, &wire, &dest);
         }
-        println!("Measuring {iters} requests...");
-        for _ in 0..iters {
+        println!("Measuring {} requests...", config.n_iters);
+        for _ in 0..config.n_iters {
             samples.push(one_request(&sock, &wire, &dest));
         }
     }
